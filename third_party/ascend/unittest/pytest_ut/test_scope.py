@@ -199,6 +199,15 @@ module {
     decision = _estimate_auto_simt_scope_decision(features)
     assert decision["eligible"]
     assert decision["choose_simt"]
+    assert decision["decision_kind"] == "all_simt_only"
+    assert set(decision["candidate_costs"]) == {"all_simd", "all_simt_only", "mixed_simd_simt"}
+    assert decision["candidate_costs"]["all_simd"] == decision["simd_cost"]
+    assert decision["candidate_costs"]["all_simt_only"] == decision["simt_cost"]
+    assert decision["candidate_costs"]["mixed_simd_simt"] == decision["simt_cost"] + decision["boundary_cost"]
+    assert decision["transition_costs"]["simd_to_simt"] > 0
+    assert decision["transition_costs"]["simt_to_simd"] == 0
+    assert decision["cost_breakdown"]["simd"]["aggregation"] == "max(vector_roofline, scalar_path)"
+    assert decision["cost_breakdown"]["mixed_simd_simt"]["available_in_p1"] is False
 
 
 def test_auto_simt_scope_cost_model_keeps_rank1_vector_kernel():
@@ -218,7 +227,165 @@ module {
     features = _analyze_auto_simt_scope_features(ttir)
     decision = _estimate_auto_simt_scope_decision(features)
     assert not decision["choose_simt"]
+    assert decision["decision_kind"] == "all_simd"
+    assert decision["candidate_costs"]["all_simd"] == decision["simd_cost"]
     assert decision["reason"] == "rank1_or_scalar_kernel"
+
+
+def test_auto_simt_scope_cost_model_selects_rank1_indirect_vector_reduce():
+    ttir_template = """
+module {
+  tt.func public @fbgemm_like(%arg0: !tt.ptr<f8E4M3FN>, %arg1: !tt.ptr<f32>, %arg2: !tt.ptr<f16>, %arg3: !tt.ptr<i32>, %arg4: !tt.ptr<i32>, %arg5: !tt.ptr<f16>, %arg6: i32) {
+    %c128_i64 = arith.constant 128 : i64
+    %pid = tt.get_program_id x : i32
+    %token_ptr = tt.addptr %arg3, %pid : !tt.ptr<i32>, i32
+    %token = tt.load %token_ptr : !tt.ptr<i32>
+    %expert_ptr = tt.addptr %arg4, %pid : !tt.ptr<i32>, i32
+    %expert = tt.load %expert_ptr : !tt.ptr<i32>
+    %scale_base = arith.muli %token, %arg6 : i32
+    %scale_ptr0 = tt.addptr %arg5, %scale_base : !tt.ptr<f16>, i32
+    %scale_ptr = tt.addptr %scale_ptr0, %expert : !tt.ptr<f16>, i32
+    %scale = tt.load %scale_ptr : !tt.ptr<f16>
+    %offs = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
+    %token_i64 = arith.extsi %token : i32 to i64
+    %row_offset = arith.muli %token_i64, %c128_i64 : i64
+    %in_base = tt.addptr %arg2, %row_offset : !tt.ptr<f16>, i64
+    %in_base_vec = tt.splat %in_base : !tt.ptr<f16> -> tensor<128x!tt.ptr<f16>>
+    %in_ptrs = tt.addptr %in_base_vec, %offs : tensor<128x!tt.ptr<f16>>, tensor<128xi32>
+    %x = tt.load %in_ptrs : tensor<128x!tt.ptr<f16>>
+    %xf = arith.extf %x : tensor<128xf16> to tensor<128xf32>
+    %abs = math.absf %xf : tensor<128xf32>
+    %mx = "tt.reduce"(%abs) <{axis = 0 : i32}> ({
+    ^bb0(%a: f32, %b: f32):
+      %m = arith.maxnumf %a, %b : f32
+      tt.reduce.return %m : f32
+    }) : (tensor<128xf32>) -> f32
+    tt.store %arg1, %mx : !tt.ptr<f32>
+    %out_base_vec = tt.splat %arg0 : !tt.ptr<f8E4M3FN> -> tensor<128x!tt.ptr<f8E4M3FN>>
+    %out_ptrs = tt.addptr %out_base_vec, %offs : tensor<128x!tt.ptr<f8E4M3FN>>, tensor<128xi32>
+    %out = tt.fp_to_fp %xf, rounding = rtne : tensor<128xf32> -> tensor<128xf8E4M3FN>
+    tt.store %out_ptrs, %out : tensor<128x!tt.ptr<f8E4M3FN>>
+    tt.return
+  }
+}
+"""
+    for block_d in (16, 128, 256, 1024, 2048):
+        ttir = ttir_template.replace("128", str(block_d))
+        features = _analyze_auto_simt_scope_features(ttir)
+        decision = _estimate_auto_simt_scope_decision(features)
+        assert features["max_tensor_rank"] == 1
+        assert features["max_tensor_numel"] == block_d
+        assert features["rank1_indirect_vector_reduce"]
+        assert decision["rank1_indirect_whole_body_eligible"]
+        assert decision["choose_simt"]
+        assert decision["decision_kind"] == "all_simt_only"
+        assert decision["reason"] == "simt_cost_lower_than_simd_with_margin"
+
+
+def test_auto_simt_scope_cost_model_reports_dot_mixed_path():
+    ttir = """
+module {
+  tt.func public @gather_dot_kernel(%arg0: !tt.ptr<f16>, %arg1: !tt.ptr<f16>, %arg2: !tt.ptr<i32>, %arg3: !tt.ptr<f32>) {
+    %0 = tt.make_range {end = 16 : i32, start = 0 : i32} : tensor<16xi32>
+    %1 = tt.load %arg2 : !tt.ptr<i32>
+    %2 = tt.expand_dims %0 {axis = 1 : i32} : tensor<16xi32> -> tensor<16x1xi32>
+    %3 = tt.broadcast %2 : tensor<16x1xi32> -> tensor<16x16xi32>
+    %4 = tt.addptr %arg0, %3 : !tt.ptr<f16>, tensor<16x16xi32>
+    %5 = tt.load %4 : tensor<16x16x!tt.ptr<f16>>
+    %6 = tt.addptr %arg1, %3 : !tt.ptr<f16>, tensor<16x16xi32>
+    %7 = tt.load %6 : tensor<16x16x!tt.ptr<f16>>
+    %8 = tt.dot %5, %7 : tensor<16x16xf16> * tensor<16x16xf16> -> tensor<16x16xf32>
+    %9 = tt.addptr %arg3, %3 : !tt.ptr<f32>, tensor<16x16xi32>
+    tt.store %9, %8 : tensor<16x16x!tt.ptr<f32>>
+    tt.return
+  }
+}
+"""
+    features = _analyze_auto_simt_scope_features(ttir)
+    decision = _estimate_auto_simt_scope_decision(features)
+    assert features["has_dot"]
+    assert features["dot_ops"] == 1
+    assert decision["decision_kind"] == "mixed_simd_simt"
+    assert decision["choose_simt"] is False
+    assert decision["dot_mixed_eligible"] is True
+    assert decision["whole_body_simt_eligible"] is False
+    assert decision["candidate_costs"]["mixed_simd_simt"] < decision["candidate_costs"]["all_simd"]
+    assert decision["reason"] == "dot_mixed_path_lower_than_simd_and_simt"
+
+
+def test_auto_simt_scope_cost_model_selects_atomic_scatter_simt_route():
+    ttir = """
+module {
+  tt.func public @atomic_scatter(%arg0: !tt.ptr<f32>, %arg1: !tt.ptr<i32>, %arg2: !tt.ptr<f32>) {
+    %offs = tt.make_range {end = 256 : i32, start = 0 : i32} : tensor<256xi32>
+    %idx_ptrs = tt.addptr %arg1, %offs : !tt.ptr<i32>, tensor<256xi32>
+    %idx = tt.load %idx_ptrs : tensor<256x!tt.ptr<i32>>
+    %val_ptrs = tt.addptr %arg2, %offs : !tt.ptr<f32>, tensor<256xi32>
+    %val = tt.load %val_ptrs : tensor<256x!tt.ptr<f32>>
+    %dst = tt.addptr %arg0, %idx : !tt.ptr<f32>, tensor<256xi32>
+    tt.atomic_add %dst, %val sem = "relaxed" : tensor<256x!tt.ptr<f32>>, tensor<256xf32>
+    tt.return
+  }
+}
+"""
+    features = _analyze_auto_simt_scope_features(ttir)
+    decision = _estimate_auto_simt_scope_decision(features)
+    assert features["has_atomic"]
+    assert features["atomic_ops"] == 1
+    assert decision["atomic_whole_body_eligible"]
+    assert decision["choose_simt"]
+    assert decision["decision_kind"] == "all_simt_only"
+    assert decision["reason"] == "atomic_or_histogram_simt_route_lower_than_simd"
+
+
+def test_auto_simt_scope_cost_model_selects_histogram_simt_route():
+    ttir = """
+module {
+  tt.func public @histogram_kernel(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>) {
+    %offs = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
+    %idx_ptrs = tt.addptr %arg0, %offs : !tt.ptr<i32>, tensor<128xi32>
+    %idx = tt.load %idx_ptrs : tensor<128x!tt.ptr<i32>>
+    %hist = tt.histogram %idx : tensor<128xi32> -> tensor<128xi32>
+    %out_ptrs = tt.addptr %arg1, %offs : !tt.ptr<i32>, tensor<128xi32>
+    tt.store %out_ptrs, %hist : tensor<128x!tt.ptr<i32>>
+    tt.return
+  }
+}
+"""
+    features = _analyze_auto_simt_scope_features(ttir)
+    decision = _estimate_auto_simt_scope_decision(features)
+    assert features["has_histogram"]
+    assert features["histogram_ops"] == 1
+    assert decision["atomic_whole_body_eligible"]
+    assert decision["choose_simt"]
+    assert decision["decision_kind"] == "all_simt_only"
+    assert decision["reason"] == "atomic_or_histogram_simt_route_lower_than_simd"
+
+
+def test_auto_simt_scope_cost_model_accounts_for_scan_without_forcing_simt():
+    ttir = """
+module {
+  tt.func public @regular_scan(%arg0: !tt.ptr<f32>, %arg1: !tt.ptr<f32>) {
+    %offs = tt.make_range {end = 1024 : i32, start = 0 : i32} : tensor<1024xi32>
+    %in_ptrs = tt.addptr %arg0, %offs : !tt.ptr<f32>, tensor<1024xi32>
+    %x = tt.load %in_ptrs : tensor<1024x!tt.ptr<f32>>
+    %scan = "tt.scan"(%x) <{axis = 0 : i32}> ({
+    ^bb0(%a: f32, %b: f32):
+      %s = arith.addf %a, %b : f32
+      tt.scan.return %s : f32
+    }) : (tensor<1024xf32>) -> tensor<1024xf32>
+    %out_ptrs = tt.addptr %arg1, %offs : !tt.ptr<f32>, tensor<1024xi32>
+    tt.store %out_ptrs, %scan : tensor<1024x!tt.ptr<f32>>
+    tt.return
+  }
+}
+"""
+    features = _analyze_auto_simt_scope_features(ttir)
+    decision = _estimate_auto_simt_scope_decision(features)
+    assert features["has_scan"]
+    assert features["scan_ops"] == 1
+    assert "scan" in decision["reason"]
+    assert set(decision["candidate_costs"]) == {"all_simd", "all_simt_only", "mixed_simd_simt"}
 
 
 def test_auto_simt_scope_wraps_whole_body_as_void_simt_scope():
