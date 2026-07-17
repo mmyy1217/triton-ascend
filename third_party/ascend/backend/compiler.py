@@ -640,7 +640,8 @@ def _analyze_auto_simt_scope_features(ttir: str) -> Dict[str, Any]:
             re.S,
         )
     )
-    scan_ops = _count_regex(r"\btt\.scan\b|\btt\.associative_scan\b", ttir)
+    # Do not count region terminators such as `tt.scan.return` as scan ops.
+    scan_ops = _count_regex(r"\btt\.(?:associative_)?scan\b(?!\.)", ttir)
     dot_ops = _count_regex(r"\btt\.dot\b", ttir)
     atomic_ops = _count_regex(r"\btt\.atomic", ttir)
     histogram_ops = _count_regex(r"\btt\.histogram\b", ttir)
@@ -1346,6 +1347,8 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
         if npu_compiler_path.endswith("bishengir-compile"):
             _compile_option_list += [
                 "--enable-hfusion-compile=true",
+                # CANN 9.1's hivmc-a5 cannot translate hacc.noinline yet.
+                "--enable-lib-call-no-inline=false",
                 "--enable-triton-kernel-compile=true",
             ]
         bisheng_options = metadata["bisheng_options"]
@@ -1584,6 +1587,8 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
             _compile_option_list += [
                 "--enable-hfusion-compile=true",
                 bishengir_hivm_opt,
+                # CANN 9.1's hivmc-a5 cannot translate hacc.noinline yet.
+                "--enable-lib-call-no-inline=false",
                 "--enable-triton-kernel-compile=true",
             ]
 
