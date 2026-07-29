@@ -22,6 +22,7 @@
 
 #include "ascend/include/DiscreteMaskAccessConversion/Passes.h"
 #include "TritonToUnstructure/IndirectAtomicUtils.h"
+#include "Utils/SimtSelection.h"
 #include "Utils/Utils.h"
 
 #include "ascend/include/TritonToLinalg/MaskAnalysis.h"
@@ -289,7 +290,11 @@ struct DiscreteMaskStoreConversion : OpRewritePattern<triton::StoreOp> {
     auto ptr = op.getPtr();
     auto ptrType = dyn_cast<RankedTensorType>(ptr.getType());
     bool rankWithinIndirectFastPathLimit = ptrType && ptrType.getShape().size() <= 5;
-    if (compileOn91095Flag && forceSimtTemplateFlag && rankWithinIndirectFastPathLimit) {
+    const bool simtTemplateRequested =
+        mlir::ascend::simt_selection::shouldUseSimtTemplate(
+            op.getOperation(), forceSimtTemplateFlag);
+    if (compileOn91095Flag && simtTemplateRequested &&
+        rankWithinIndirectFastPathLimit) {
       return failure();
     }
 
@@ -357,7 +362,11 @@ struct DiscreteMaskLoadConversion : OpRewritePattern<triton::LoadOp> {
 
     auto ptrType = dyn_cast<RankedTensorType>(ptr.getType());
     bool rankWithinIndirectFastPathLimit = ptrType && ptrType.getShape().size() <= 5;
-    if (compileOn91095Flag && forceSimtTemplateFlag && rankWithinIndirectFastPathLimit) {
+    const bool simtTemplateRequested =
+        mlir::ascend::simt_selection::shouldUseSimtTemplate(
+            op.getOperation(), forceSimtTemplateFlag);
+    if (compileOn91095Flag && simtTemplateRequested &&
+        rankWithinIndirectFastPathLimit) {
       return failure();
     }
 

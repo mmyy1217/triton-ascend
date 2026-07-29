@@ -1,0 +1,259 @@
+{
+  "$schema": "./microbenchmark_profile_schema.json",
+  "schema_version": 1,
+  "profile_version": "david-v100-shared-microbench-20260728-v1",
+  "target": "Ascend950PR/dav-c310",
+  "description": "Model-neutral target facts and microbenchmark evidence. Model-specific scale, penalties, coverage, gates, and fallback priors are intentionally excluded.",
+  "measurements": {
+    "clock.sys_cnt.frequency_mhz": {
+      "description": "SYS_CNT counter frequency used to convert SYS_CNT cycles to wall-clock time and device-compute cycles.",
+      "value": 988.9,
+      "unit": "MHz",
+      "cycle_domain": "wall_clock",
+      "scope": "device",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test SYS_CNT slope calibration",
+      "confidence": "high"
+    },
+    "clock.device_compute.frequency_mhz": {
+      "description": "Device compute clock from the hardware configuration; this is not the SYS_CNT counter frequency.",
+      "value": 1650.0,
+      "unit": "MHz",
+      "cycle_domain": "wall_clock",
+      "scope": "device",
+      "source_kind": "device_configuration",
+      "source": "ascend_davidv100.json clock.frequency_ghz",
+      "confidence": "high"
+    },
+    "simd.vector_width_bits": {
+      "description": "Physical SIMD vector width of one AIV, expressed in bits; FP32 lane count is width_bits / 32.",
+      "value": 2048,
+      "unit": "bit",
+      "cycle_domain": "none",
+      "scope": "single_aiv",
+      "source_kind": "architecture_fact",
+      "source": "Ascend vector ISA width",
+      "confidence": "high"
+    },
+    "simt.warp_size": {
+      "description": "Number of scalar SIMT lanes that execute as one warp.",
+      "value": 32,
+      "unit": "lane",
+      "cycle_domain": "none",
+      "scope": "single_warp",
+      "source_kind": "architecture_fact",
+      "source": "Ascend SIMT execution contract",
+      "confidence": "high"
+    },
+    "simd.f32.add.throughput": {
+      "description": "Saturated FP32 SIMD add issue throughput on one AIV.",
+      "value": 3.30,
+      "unit": "vector_instruction/system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test/tput.cce; concur2.cce",
+      "confidence": "high"
+    },
+    "simd.f32.add.dependent_latency": {
+      "description": "Latency of one FP32 SIMD add in a dependent instruction chain on one AIV.",
+      "value": 1.818,
+      "unit": "system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_dependent_chain",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test/tput.cce; concur2.cce",
+      "confidence": "high"
+    },
+    "simt.f32.add.throughput": {
+      "description": "Saturated FP32 SIMT scalar-add throughput on one AIV; used as the measured base rate for relative SIMT op estimates.",
+      "value": 141.0,
+      "unit": "scalar_op/system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_saturated_11_warp_equivalent",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test/tput.cce",
+      "confidence": "high"
+    },
+    "simt.setup.empty": {
+      "description": "Fixed SIMT setup cost of an empty single-AIV launch without an explicit barrier.",
+      "value": 115.0,
+      "unit": "system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_empty_launch",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test/meas.cce",
+      "confidence": "high"
+    },
+    "simt.setup.empty_with_barrier": {
+      "description": "Fixed SIMT setup cost of an empty single-AIV launch including the measured barrier overhead.",
+      "value": 141.0,
+      "unit": "system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_empty_launch_with_barrier",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test/meas.cce",
+      "confidence": "high"
+    },
+    "simt.shuffle.throughput": {
+      "description": "Saturated FP32 shfl-up throughput measured with 32 warps and four independent ILP chains.",
+      "value": 0.8172,
+      "unit": "warp_instruction/system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_fp32_shfl_up_32_warps_ilp4_four_independent_chains",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test/simt_shuffle_david_v100_20260725.csv",
+      "confidence": "medium"
+    },
+    "simt.shuffle.dependent_latency": {
+      "description": "FP32 shfl-up latency measured with one warp and a dependent instruction chain.",
+      "value": 27.2706,
+      "unit": "system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_fp32_shfl_up_1_warp_dependent_chain",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test/simt_shuffle_david_v100_20260725.csv",
+      "confidence": "medium"
+    },
+    "simt.gm.load.throughput": {
+      "description": "Single-AIV GM-load instruction issue throughput for the stated 32-warp sequential rotating workload.",
+      "value": 0.1731,
+      "unit": "warp_instruction/system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_32_warps_sequential_128mib_rotating_8_independent_ops_per_thread",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test/simt_gm_memory_david_v100_20260725.csv",
+      "confidence": "medium"
+    },
+    "simt.gm.store.throughput": {
+      "description": "Single-AIV GM-store instruction issue throughput for the stated 32-warp sequential rotating workload.",
+      "value": 0.1290,
+      "unit": "warp_instruction/system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_32_warps_sequential_128mib_rotating_8_independent_ops_per_thread",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test/simt_gm_memory_david_v100_20260725.csv",
+      "confidence": "medium"
+    },
+    "simt.gm.load.bandwidth": {
+      "description": "Effective single-AIV GM-load byte bandwidth for the stated workload; this is not whole-device theoretical HBM peak bandwidth.",
+      "value": 22.1516,
+      "unit": "byte/system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_32_warps_sequential_128mib_rotating_8_independent_ops_per_thread",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test/simt_gm_memory_david_v100_20260725.csv",
+      "confidence": "medium"
+    },
+    "simt.gm.store.bandwidth": {
+      "description": "Effective single-AIV GM-store byte bandwidth for the stated workload; this is not whole-device theoretical HBM peak bandwidth.",
+      "value": 16.5114,
+      "unit": "byte/system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_32_warps_sequential_128mib_rotating_8_independent_ops_per_thread",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test/simt_gm_memory_david_v100_20260725.csv",
+      "confidence": "medium"
+    },
+    "simt.ub.load.throughput": {
+      "description": "Single-AIV UB-load instruction issue throughput for the stated 16-warp rotating-set workload.",
+      "value": 0.5073,
+      "unit": "warp_instruction/system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_16_warps_128kib_4_rotating_sets_8_independent_ops_per_thread",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test/simt_memory_david_v100_20260725.csv",
+      "confidence": "medium"
+    },
+    "simt.ub.store.throughput": {
+      "description": "Single-AIV UB-store instruction issue throughput for the stated 16-warp rotating-set workload.",
+      "value": 0.5301,
+      "unit": "warp_instruction/system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_16_warps_128kib_4_rotating_sets_8_independent_ops_per_thread",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test/simt_memory_david_v100_20260725.csv",
+      "confidence": "medium"
+    },
+    "simt.ub.load.bandwidth": {
+      "description": "Effective single-AIV UB-load byte bandwidth for the stated workload.",
+      "value": 64.9347,
+      "unit": "byte/system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_16_warps_128kib_4_rotating_sets_8_independent_ops_per_thread",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test/simt_memory_david_v100_20260725.csv",
+      "confidence": "medium"
+    },
+    "simt.ub.store.bandwidth": {
+      "description": "Effective single-AIV UB-store byte bandwidth for the stated workload.",
+      "value": 67.8525,
+      "unit": "byte/system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_16_warps_128kib_4_rotating_sets_8_independent_ops_per_thread",
+      "source_kind": "isolated_microbenchmark",
+      "source": "triton_cases/SIMT_Test/simt_memory_david_v100_20260725.csv",
+      "confidence": "medium"
+    },
+    "mixed.empty_simt_setup.warps_1": {
+      "description": "Complete mixed-mode empty SIMT-region setup cost when the region is launched with one warp.",
+      "value": 182.0,
+      "unit": "system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_mixed_launch_1_warp",
+      "source_kind": "isolated_microbenchmark",
+      "source": "simt_transition_microbench_tail16_barrier_20260713.txt",
+      "confidence": "medium"
+    },
+    "mixed.empty_simt_setup.warps_2": {
+      "description": "Complete mixed-mode empty SIMT-region setup cost when the region is launched with two warps.",
+      "value": 182.0,
+      "unit": "system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_mixed_launch_2_warps",
+      "source_kind": "isolated_microbenchmark",
+      "source": "simt_transition_microbench_tail16_barrier_20260713.txt",
+      "confidence": "medium"
+    },
+    "mixed.empty_simt_setup.warps_4": {
+      "description": "Complete mixed-mode empty SIMT-region setup cost when the region is launched with four warps.",
+      "value": 182.0,
+      "unit": "system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_mixed_launch_4_warps",
+      "source_kind": "isolated_microbenchmark",
+      "source": "simt_transition_microbench_tail16_barrier_20260713.txt",
+      "confidence": "medium"
+    },
+    "mixed.empty_simt_setup.warps_8": {
+      "description": "Complete mixed-mode empty SIMT-region setup cost when the region is launched with eight warps.",
+      "value": 182.0,
+      "unit": "system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_mixed_launch_8_warps",
+      "source_kind": "isolated_microbenchmark",
+      "source": "simt_transition_microbench_tail16_barrier_20260713.txt",
+      "confidence": "medium"
+    },
+    "mixed.empty_simt_setup.warps_16": {
+      "description": "Complete mixed-mode empty SIMT-region setup cost when the region is launched with sixteen warps.",
+      "value": 182.0,
+      "unit": "system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_mixed_launch_16_warps",
+      "source_kind": "isolated_microbenchmark",
+      "source": "simt_transition_microbench_tail16_barrier_20260713.txt",
+      "confidence": "medium"
+    },
+    "mixed.empty_simt_setup.warps_32": {
+      "description": "Complete mixed-mode empty SIMT-region setup cost when the region is launched with thirty-two warps.",
+      "value": 223.0,
+      "unit": "system_cycle",
+      "cycle_domain": "SYS_CNT",
+      "scope": "single_aiv_mixed_launch_32_warps",
+      "source_kind": "isolated_microbenchmark",
+      "source": "simt_transition_microbench_tail16_barrier_20260713.txt",
+      "confidence": "medium"
+    }
+  }
+}

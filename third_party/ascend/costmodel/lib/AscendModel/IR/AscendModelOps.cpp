@@ -15,6 +15,9 @@
 #include "mlir/IR/TypeUtilities.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <algorithm>
+#include <cmath>
+
 using namespace mlir;
 using namespace mlir::ascend;
 
@@ -53,16 +56,30 @@ static int getElementBitsFromType(Type type) {
 }
 
 /// Estimate vector operation cycles.
-/// Vector unit is 2048 bits wide = 128 FP16 = 64 FP32 elements per cycle.
+///
+/// The vector width is a hardware fact.  A model-neutral measured throughput
+/// may override the absolute model's legacy cycles-per-instruction fallback,
+/// while startup and other calibration remain absolute-model policy.
 static int64_t estimateVectorCycles(int64_t numElements, int cyclesPerVectorOp,
-                                    int elementBits, int startupLatency) {
+                                    int elementBits, int startupLatency,
+                                    const HardwareConfig &config,
+                                    llvm::StringRef throughputMeasurement = {}) {
   // Vector width based on element type
-  int64_t vectorWidth = 2048 / elementBits;
+  int64_t vectorWidth =
+      std::max<int64_t>(1, config.getVectorWidthBytes() * 8 / elementBits);
   
   // Number of vector operations
   int64_t numVectorOps = (numElements + vectorWidth - 1) / vectorWidth;
-  
-  // Total cycles
+
+  if (!throughputMeasurement.empty()) {
+    double instructionsPerDeviceCycle =
+        config.getMicrobenchmarkRatePerDeviceCycle(throughputMeasurement);
+    if (instructionsPerDeviceCycle > 0.0)
+      return static_cast<int64_t>(
+                 std::ceil(numVectorOps / instructionsPerDeviceCycle)) +
+             startupLatency;
+  }
+
   return numVectorOps * cyclesPerVectorOp + startupLatency;
 }
 
@@ -183,16 +200,29 @@ int64_t VectorStoreOp::getTransferBytes() { return getBytes(); }
 // Simple Vector Binary Operations (1 cycle per vector op)
 //===----------------------------------------------------------------------===//
 
+int64_t AddOp::estimateCycles(const HardwareConfig &config) {
+  int64_t n = getNumElementsFromType(getLhs().getType());
+  int bits = getElementBitsFromType(getLhs().getType());
+  llvm::StringRef measurement =
+      bits == 32 ? "simd.f32.add.throughput" : llvm::StringRef();
+  return estimateVectorCycles(n, 1, bits, config.getVectorStartupLatency(),
+                              config, measurement);
+}
+HWUnit AddOp::getHWUnit() { return HWUnit::Vector; }
+int64_t AddOp::getFlops() {
+  return getNumElementsFromType(getLhs().getType());
+}
+
 #define IMPL_SIMPLE_VECTOR_BINARY(OpClass)                                      \
   int64_t OpClass::estimateCycles(const HardwareConfig &config) {               \
     int64_t n = getNumElementsFromType(getLhs().getType());                     \
     int bits = getElementBitsFromType(getLhs().getType());                      \
-    return estimateVectorCycles(n, 1, bits, config.getVectorStartupLatency());  \
+    return estimateVectorCycles(n, 1, bits, config.getVectorStartupLatency(),   \
+                                config);                                         \
   }                                                                             \
   HWUnit OpClass::getHWUnit() { return HWUnit::Vector; }                        \
   int64_t OpClass::getFlops() { return getNumElementsFromType(getLhs().getType()); }
 
-IMPL_SIMPLE_VECTOR_BINARY(AddOp)
 IMPL_SIMPLE_VECTOR_BINARY(SubOp)
 IMPL_SIMPLE_VECTOR_BINARY(MulOp)
 IMPL_SIMPLE_VECTOR_BINARY(MaxOp)
@@ -208,7 +238,8 @@ int64_t DivOp::estimateCycles(const HardwareConfig &config) {
   int64_t n = getNumElementsFromType(getLhs().getType());
   int bits = getElementBitsFromType(getLhs().getType());
   // Calibrated: 12 cycles (was 4). Division is latency-limited on Ascend 910B.
-  return estimateVectorCycles(n, 12, bits, config.getVectorStartupLatency());
+  return estimateVectorCycles(n, 12, bits, config.getVectorStartupLatency(),
+                              config);
 }
 HWUnit DivOp::getHWUnit() { return HWUnit::Vector; }
 int DivOp::getCyclesPerVectorOp() { return 12; }
@@ -222,7 +253,8 @@ int64_t DivOp::getFlops() { return getNumElementsFromType(getLhs().getType()); }
   int64_t OpClass::estimateCycles(const HardwareConfig &config) {                \
     int64_t n = getNumElementsFromType(getLhs().getType());                      \
     int bits = getElementBitsFromType(getLhs().getType());                       \
-    return estimateVectorCycles(n, 1, bits, config.getVectorStartupLatency());   \
+    return estimateVectorCycles(n, 1, bits, config.getVectorStartupLatency(),   \
+                                config);                                         \
   }                                                                              \
   HWUnit OpClass::getHWUnit() { return HWUnit::Vector; }                         \
   int64_t OpClass::getFlops() { return getNumElementsFromType(getLhs().getType()); }
@@ -244,7 +276,8 @@ IMPL_VECTOR_CMP(CmpGeOp)
   int64_t OpClass::estimateCycles(const HardwareConfig &config) {                \
     int64_t n = getNumElementsFromType(getInput().getType());                    \
     int bits = getElementBitsFromType(getInput().getType());                     \
-    return estimateVectorCycles(n, 1, bits, config.getVectorStartupLatency());   \
+    return estimateVectorCycles(n, 1, bits, config.getVectorStartupLatency(),   \
+                                config);                                         \
   }                                                                              \
   HWUnit OpClass::getHWUnit() { return HWUnit::Vector; }                         \
   int64_t OpClass::getFlops() { return getNumElementsFromType(getInput().getType()); }
@@ -265,7 +298,7 @@ IMPL_SIMPLE_VECTOR_UNARY(CastOp)
     int64_t n = getNumElementsFromType(getInput().getType());                    \
     int bits = getElementBitsFromType(getInput().getType());                     \
     return estimateVectorCycles(n, CyclesPerOp, bits,                            \
-                                config.getVectorStartupLatency());               \
+                                config.getVectorStartupLatency(), config);       \
   }                                                                              \
   HWUnit OpClass::getHWUnit() { return HWUnit::Vector; }                         \
   int OpClass::getCyclesPerVectorOp() { return CyclesPerOp; }                    \
@@ -299,7 +332,8 @@ IMPL_COMPLEX_VECTOR_UNARY(SigmoidOp, 15)
   int64_t OpClass::estimateCycles(const HardwareConfig &config) {                \
     int64_t numElems = getNumElementsFromType(getInput().getType());             \
     int bits = getElementBitsFromType(getInput().getType());                     \
-    int64_t vectorWidth = 2048 / bits;                                           \
+    int64_t vectorWidth =                                                       \
+        std::max<int64_t>(1, config.getVectorWidthBytes() * 8 / bits);           \
     int64_t numVectors = (numElems + vectorWidth - 1) / vectorWidth;             \
     int vectorReduceCycles = 0;                                                  \
     int64_t w = vectorWidth;                                                     \
@@ -337,7 +371,8 @@ HWUnit BroadcastOp::getHWUnit() { return HWUnit::Vector; }
 int64_t SelectOp::estimateCycles(const HardwareConfig &config) {
   int64_t n = getNumElementsFromType(getResult().getType());
   int bits = getElementBitsFromType(getResult().getType());
-  return estimateVectorCycles(n, 1, bits, config.getVectorStartupLatency());
+  return estimateVectorCycles(n, 1, bits, config.getVectorStartupLatency(),
+                              config);
 }
 HWUnit SelectOp::getHWUnit() { return HWUnit::Vector; }
 int64_t SelectOp::getFlops() {

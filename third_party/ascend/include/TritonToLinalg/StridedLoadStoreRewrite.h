@@ -50,8 +50,10 @@ inline constexpr const char *InspectedByStridedLoadStoreRewriteTAG =
 //   layout (i.e. ImplicitPermute would not / did not touch it, and it isn't
 //   the stride==2 even-size case handled by DeinterleaveStatusOptimization).
 //
-//   Runs as a sub-step of TritonToLinalgPass, after processImplicitPermute,
-//   and is gated on `compileOn91095Flag && forceSimtTemplateFlag`.
+//   Runs as a sub-step of TritonToLinalgPass, after processImplicitPermute.
+//   Legacy routing is gated on `compileOn91095Flag && forceSimtTemplateFlag`;
+//   model-controlled routing additionally filters every rewrite to operations
+//   carrying the local SIMT selection marker.
 class LoadConverter : public OpRewritePattern<triton::LoadOp> {
 public:
     explicit LoadConverter(MLIRContext *context)

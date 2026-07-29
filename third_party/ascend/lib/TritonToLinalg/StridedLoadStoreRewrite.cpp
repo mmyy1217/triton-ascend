@@ -24,6 +24,7 @@
 #include "TritonToLinalg/ImplicitPermute.h"
 #include "TritonToLinalg/MaskAnalysis.h"
 #include "TritonToStructured/PtrAnalysis.h"
+#include "Utils/SimtSelection.h"
 #include "Utils/Utils.h"
 
 #include "Dialect/TritonAscend/IR/TritonAscendDialect.h"
@@ -1292,6 +1293,15 @@ LogicalResult LoadConverter::matchAndRewrite(triton::LoadOp op,
     auto loc = op.getLoc();
     (void)loc;
 
+    // In a cost-model controlled compilation, this module-level rewrite pass
+    // may run so that selected loads can use the SIMT fast path.  Do not let it
+    // rewrite unselected loads merely because the legacy global force flag was
+    // set by compile_mode=simd_simt.
+    if (mlir::ascend::simt_selection::isModelControlled(op) &&
+        !mlir::ascend::simt_selection::shouldUseSimtTemplate(
+            op, /*legacyForceSimt=*/false))
+        return failure();
+
     // ---- Re-entry / cross-step guards ----
     if (op->hasAttr(InspectedByStridedLoadStoreRewriteTAG)) return failure();
     if (op->hasAttr(RewrittenByStridedLoadStoreRewriteTAG)) return failure();
@@ -1331,6 +1341,11 @@ LogicalResult LoadConverter::matchAndRewrite(triton::LoadOp op,
 
 LogicalResult StoreConverter::matchAndRewrite(triton::StoreOp op,
                                               PatternRewriter &rewriter) const {
+    if (mlir::ascend::simt_selection::isModelControlled(op) &&
+        !mlir::ascend::simt_selection::shouldUseSimtTemplate(
+            op, /*legacyForceSimt=*/false))
+        return failure();
+
     // ---- Re-entry / cross-step guards (same convention as LoadConverter) ----
     if (op->hasAttr(InspectedByStridedLoadStoreRewriteTAG)) return failure();
     if (op->hasAttr(RewrittenByStridedLoadStoreRewriteTAG)) return failure();

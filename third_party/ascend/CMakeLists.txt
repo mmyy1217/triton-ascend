@@ -60,6 +60,20 @@ if(TRITON_ASCEND_ENABLE_COSTMODEL_INPROC)
     include_directories("${CMAKE_BINARY_DIR}/third_party/ascend/costmodel_build/include_AscendModel")
     include_directories("${TRITON_ASCEND_COSTMODEL_SOURCE_DIR}/include")
 
+    # The vendored cost model is built inside Triton-Ascend, where BiShengIR
+    # has already been added above. Enable native HIVM parsing explicitly;
+    # otherwise HIVMAnalyzer is compiled in generic/unregistered-dialect mode.
+    set(TRITONSIM_HAS_BISHENGIR_HIVM ON)
+    set(TRITONSIM_BISHENGIR_INCLUDE_DIRS
+      "${ASCENDNPU_IR_SRC_DIR}/bishengir/include"
+      "${ASCENDNPU_IR_BINARY_DIR}/bishengir/include"
+    )
+    set(TRITONSIM_BISHENGIR_HIVM_LIBS
+      BiShengIRAnnotationDialect
+      BiShengIRHACCDialect
+      BiShengIRHIVMDialect
+    )
+
     add_subdirectory(${_costmodel_include_dir} ${CMAKE_BINARY_DIR}/third_party/ascend/costmodel_build/include_AscendModel)
     add_subdirectory(${_costmodel_lib_dir} ${CMAKE_BINARY_DIR}/third_party/ascend/costmodel_build/lib_AscendModel)
     set(TRITON_ASCEND_HAS_INPROC_COSTMODEL 1)

@@ -14,6 +14,7 @@
 #include "ascend/include/TritonToAnnotation/Passes.h"
 #include "ascend/include/TritonControlFlowOpt/Passes.h"
 #include "ascend/include/TritonToLinalg/Passes.h"
+#include "ascend/include/TritonToLinalg/RowCoalescing.h"
 #include "ascend/include/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 #include "ascend/include/DiscreteMaskAccessConversion/Passes.h"
 #include "ascend/include/TritonToUnstructure/Passes.h"
@@ -32,6 +33,8 @@
 #include <pybind11/stl.h>
 
 #if TRITON_ASCEND_HAS_INPROC_COSTMODEL
+#include "AscendModel/Analysis/HIVMAnalysis.h"
+#include "AscendModel/Analysis/HardwareConfig.h"
 #include "AscendModel/IR/AscendModelDialect.h"
 #include "AscendModel/Transforms/Passes.h"
 
@@ -44,6 +47,10 @@
 #include <sstream>
 #include <stdexcept>
 #include <vector>
+
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/ADT/SmallString.h"
 #endif
 
 namespace py = pybind11;
@@ -331,6 +338,38 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
   m.def("add_triton_control_flow_opt", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::createTritonControlFlowOptPass());});
 
+  m.def("add_row_coalescing", [](mlir::PassManager &pm) {
+    pm.addPass(RowCoalescing::createRowCoalescingPass());
+  });
+
+#if TRITON_ASCEND_HAS_INPROC_COSTMODEL
+  m.def(
+      "add_select_simd_simt_costmodel",
+      [](mlir::PassManager &pm, const std::string &mode,
+         const std::string &profilePath, const std::string &actualTarget,
+         int64_t numWarps, double marginRatio, bool compileOn91095,
+         const std::string &reportFile) {
+        mlir::ascend::SelectSimdSimtCostModelPassOptions opts;
+        opts.mode = mode;
+        opts.profilePath = profilePath;
+        opts.actualTarget = actualTarget;
+        opts.numWarps = numWarps;
+        opts.marginRatio = marginRatio;
+        opts.compileOn91095 = compileOn91095;
+        opts.reportFile = reportFile;
+        pm.addPass(
+            mlir::ascend::createSelectSimdSimtCostModelPass(opts));
+      },
+      py::arg("pm"), py::arg("mode"), py::arg("profile_path"),
+      py::arg("actual_target"), py::arg("num_warps"),
+      py::arg("margin_ratio"), py::arg("compile_on_910_95"),
+      py::arg("report_file") = "");
+
+  m.def("add_materialize_simt_scopes", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::ascend::createMaterializeSimtScopesPass());
+  });
+#endif
+
   m.def("add_triton_to_annotation", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::createTritonToAnnotationPass());});
 
@@ -377,19 +416,17 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
       pm.addPass(mlir::triton::createAddDynamicCVPipelinePass(opts));
     });
 
-  m.def("set_buffer_count", [](mlir::ModuleOp &module, const std::string& type, int count) {
-    mlir::triton::BufferCountManager mgr(module);
+  m.def("set_buffer_count", [](const std::string& type, int count) {
     if (type == "INTRA") {
-      mgr.setBufferCount(mlir::triton::BufferCountManager::DepType::IntraCore, count);
+      mlir::triton::BufferCountManager::getInstance().setBufferCount(
+          mlir::triton::BufferCountManager::DepType::IntraCore, count);
     } else if (type == "INTER") {
-      mgr.setBufferCount(mlir::triton::BufferCountManager::DepType::InterCore, count);
+      mlir::triton::BufferCountManager::getInstance().setBufferCount(
+          mlir::triton::BufferCountManager::DepType::InterCore, count);
     } else if (type == "LOAD") {
-      mgr.setBufferCount(mlir::triton::BufferCountManager::DepType::LoadStore, count);
+      mlir::triton::BufferCountManager::getInstance().setBufferCount(
+          mlir::triton::BufferCountManager::DepType::LoadStore, count);
     }
-  });
-
-  m.def("set_enable_cube_block_merge", [](bool enable) {
-    mlir::CVPipeline::setEnableCubeBlockMerge(enable);
   });
 }
 
@@ -579,6 +616,59 @@ static std::string runAscendCostModelInProcess(const std::string &mlirText,
   os << "Estimated Time: " << timeUs << " us\n";
   return os.str();
 }
+
+static std::string runHIVMCostModelInProcess(
+    const std::string &mlirText, const std::string &hardwareConfigPath,
+    const std::string &scheduler, const std::string &argBindings = "",
+    bool feedbackJSON = false) {
+  std::string loadError;
+  auto config = mlir::ascend::loadHardwareConfigForAnalysis(
+      hardwareConfigPath, loadError);
+  if (!config)
+    throw std::runtime_error("failed to load HIVM hardware config: " +
+                             loadError);
+
+  mlir::ascend::HIVMSchedulerMode mode;
+  if (scheduler.empty() || scheduler == "static")
+    mode = mlir::ascend::HIVMSchedulerMode::Static;
+  else if (scheduler == "des")
+    mode = mlir::ascend::HIVMSchedulerMode::DES;
+  else
+    throw std::runtime_error(
+        "invalid HIVM scheduler; expected 'static' or 'des'");
+  if (feedbackJSON && mode != mlir::ascend::HIVMSchedulerMode::DES)
+    throw std::runtime_error(
+        "HIVM feedback JSON requires the 'des' scheduler");
+
+  int fd = -1;
+  llvm::SmallString<128> path;
+  if (auto ec = llvm::sys::fs::createTemporaryFile(
+          "triton-hivm-costmodel", "mlir", fd, path))
+    throw std::runtime_error("failed to create temporary HIVM IR file: " +
+                             ec.message());
+  {
+    llvm::raw_fd_ostream os(fd, true);
+    os << mlirText;
+  }
+
+  mlir::ascend::HIVMAnalyzer analyzer(*config, argBindings, mode);
+  mlir::ascend::HIVMAnalysisReport report;
+  std::string error;
+  bool ok = analyzer.analyzeFile(path, report, error);
+  llvm::sys::fs::remove(path);
+  if (!ok)
+    throw std::runtime_error("in-process HIVM analysis failed: " + error);
+  if (feedbackJSON)
+    report.sourcePath = "<in-memory-module>";
+
+  std::string result;
+  llvm::raw_string_ostream os(result);
+  if (feedbackJSON)
+    report.emitFeedbackJSON(os, *config);
+  else
+    report.print(os, *config);
+  return os.str();
+}
 #endif
 
 // Forward declaration for ascend_ir bindings (defined in ascend_ir.cc)
@@ -602,11 +692,50 @@ void init_triton_ascend(py::module &&m) {
     py::gil_scoped_release release;
     return runAscendCostModelInProcess(mlirText, extraArgs);
   }, py::arg("mlir_text"), py::arg("extra_args") = std::vector<std::string>{});
+  m.def("run_hivm_costmodel_inproc",
+        [](const std::string &mlirText,
+           const std::string &hardwareConfigPath,
+           const std::string &scheduler) {
+          py::gil_scoped_release release;
+          return runHIVMCostModelInProcess(mlirText, hardwareConfigPath,
+                                           scheduler);
+        },
+        py::arg("mlir_text"), py::arg("hardware_config"),
+        py::arg("scheduler") = "des");
+  m.def("run_hivm_costmodel_feedback_inproc",
+         [](const std::string &mlirText,
+            const std::string &hardwareConfigPath,
+            const std::string &scheduler,
+            const std::string &argBindings) {
+           py::gil_scoped_release release;
+           return runHIVMCostModelInProcess(
+               mlirText, hardwareConfigPath, scheduler, argBindings, true);
+         },
+         py::arg("mlir_text"), py::arg("hardware_config"),
+         py::arg("scheduler") = "des", py::arg("arg_bindings") = "");
 #else
   m.def("run_costmodel_inproc", [](const std::string &, const std::vector<std::string> &) {
     throw std::runtime_error("in-process costmodel bridge is not enabled in this build");
     return std::string();
   }, py::arg("mlir_text"), py::arg("extra_args") = std::vector<std::string>{});
+  m.def("run_hivm_costmodel_inproc",
+        [](const std::string &, const std::string &,
+           const std::string &) {
+          throw std::runtime_error(
+              "in-process costmodel bridge is not enabled in this build");
+          return std::string();
+        },
+        py::arg("mlir_text"), py::arg("hardware_config"),
+        py::arg("scheduler") = "des");
+  m.def("run_hivm_costmodel_feedback_inproc",
+         [](const std::string &, const std::string &, const std::string &,
+            const std::string &) {
+          throw std::runtime_error(
+              "in-process costmodel bridge is not enabled in this build");
+          return std::string();
+         },
+         py::arg("mlir_text"), py::arg("hardware_config"),
+         py::arg("scheduler") = "des", py::arg("arg_bindings") = "");
 #endif
 
   // Initialize ascend IR bindings (ascendnpu_ir_builder, scope/hivm dialects)

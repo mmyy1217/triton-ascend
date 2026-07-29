@@ -42,6 +42,7 @@
 #include "ascend/include/TritonToUnstructure/UnstructureConversionPass.h"
 #include "ascend/include/TritonToStructured/CannonicalizerConverter.h"
 #include "ascend/include/Utils/InterleaveOptimization.h"
+#include "ascend/include/Utils/SimtSelection.h"
 #include "ascend/include/Utils/Utils.h"
 
 #include "bishengir/Dialect/HFusion/IR/HFusion.h"
@@ -166,19 +167,28 @@ static bool isSIMTOp(Operation *op)
            custom_op.getVFMode() == hivm::VFMode::SIMT;
   }
 
+  // backend_default retains the historical target-specific routing.  Once a
+  // concrete cost-model decision is present, direct SIMT templates must be
+  // backed by the persistent selected-op marker (the local scope itself is
+  // consumed by TritonToUnstructure before this pass).
+  const bool directSimtEnabled =
+      !mlir::ascend::simt_selection::isModelControlled(op) ||
+      mlir::ascend::simt_selection::shouldUseSimtTemplate(
+          op, /*legacyForceSimt=*/false);
+
   if (isa<triton::GatherOp>(op) && compileOn91095Flag) {
-    return true;
+    return directSimtEnabled;
   }
 
   if (isa<triton::HistogramOp>(op) && compileOn91095Flag) {
-    return true;
+    return directSimtEnabled;
   }
 
   // tt.scan: only a 1-D cumsum is treated as a SIMT op (drives the kernel
   // parallel_mode -> mix_simd_simt -> enable_simt). Everything else stays SIMD.
   if (compileOn91095Flag) {
     if (auto scan = dyn_cast<triton::ScanOp>(op)) {
-      return isSimt1DCumsum(scan);
+      return directSimtEnabled && isSimt1DCumsum(scan);
     }
   }
   return isa<
@@ -820,7 +830,38 @@ LogicalResult TritonToLinalgPass::processStridedLoadStoreRewriteOperations(Modul
 {
   // The strided-axis rewrites below only apply in 950 SIMT mode. On other
   // targets we leave strided loads to the legacy strided DMA lowering.
-  if (!(compileOn91095Flag && forceSimtTemplateFlag)) {
+  bool hasModelControlledFunction =
+      mlir::ascend::simt_selection::isModelControlled(moduleOp);
+  if (!hasModelControlledFunction) {
+    moduleOp.walk([&](triton::FuncOp funcOp) {
+      if (mlir::ascend::simt_selection::isModelControlled(funcOp))
+        hasModelControlledFunction = true;
+    });
+  }
+
+  bool hasModelSelectedMemoryOp = false;
+  if (hasModelControlledFunction) {
+    moduleOp.walk([&](Operation *op) {
+      if (!isa<triton::LoadOp, triton::StoreOp>(op))
+        return WalkResult::advance();
+      if (mlir::ascend::simt_selection::isModelControlled(op) &&
+          mlir::ascend::simt_selection::shouldUseSimtTemplate(
+              op, /*legacyForceSimt=*/false)) {
+        hasModelSelectedMemoryOp = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+  }
+
+  // A concrete model decision owns routing for this compilation.  In
+  // particular, compile_mode=simd_simt still sets the historical global force
+  // flag, but all-SIMD and mixed-without-memory selections must not activate
+  // the module-wide strided/coalescing rewrites.
+  const bool useLegacyGlobalForce =
+      forceSimtTemplateFlag && !hasModelControlledFunction;
+  if (!(compileOn91095Flag &&
+        (useLegacyGlobalForce || hasModelSelectedMemoryOp))) {
     return success();
   }
 
@@ -1266,6 +1307,27 @@ void TritonToLinalgPass::runOnOperation() {
       }
     }
     return WalkResult::advance();
+  });
+
+  // The selection protocol is compile-time control state, not device IR.
+  // Python has already copied the report into compiler metadata, and all
+  // lowering consumers above have finished.  Do not leak private model attrs
+  // into the external BiSheng/HIVM compiler.
+  for (llvm::StringRef name : {
+           "ascend.simt_costmodel.effective",
+           "ascend.simt_costmodel.recommended",
+           "ascend.simt_costmodel.selection_source",
+           "ascend.simt_costmodel.ranking_confidence",
+           "ascend.simt_costmodel.all_simd_score",
+           "ascend.simt_costmodel.all_simt_score",
+           "ascend.simt_costmodel.mixed_score",
+           "ascend.simt_costmodel.report_json",
+           "ascend.simt_costmodel.scope_materialized",
+       })
+    moduleOp->removeAttr(name);
+  moduleOp.walk([](Operation *op) {
+    op->removeAttr(
+        mlir::ascend::simt_selection::kSelectedForSimtAttr);
   });
 }
 

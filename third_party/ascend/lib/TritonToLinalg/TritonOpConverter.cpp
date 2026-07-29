@@ -25,6 +25,7 @@
 #include "ascend/include/TritonToLinalg/TritonToLinalgPass.h"
 #include "ascend/include/TritonToLinalg/BlockPtrAnalysis.h"
 #include "ascend/include/TritonToLinalg/MaskAnalysis.h"
+#include "ascend/include/Utils/SimtSelection.h"
 #include "ascend/include/Utils/Utils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -3093,6 +3094,17 @@ IndexSelectSimdConverter::matchAndRewrite(triton::ascend::IndexSelectSimdOp op, 
 LogicalResult HistogramConverter::matchAndRewrite(
     triton::HistogramOp op, OpAdaptor adaptor,
     ConversionPatternRewriter &rewriter) const {
+  // The 910/95 histogram converter below is intrinsically SIMT.  Never
+  // silently emit it for an admitted all-SIMD/model-unselected operation;
+  // legality analysis must keep mixed as the only selectable route until a
+  // real SIMD histogram lowering exists.
+  if (mlir::ascend::simt_selection::isModelControlled(op) &&
+      !mlir::ascend::simt_selection::shouldUseSimtTemplate(
+          op, /*legacyForceSimt=*/false)) {
+    return rewriter.notifyMatchFailure(
+        op, "SIMT histogram was not selected by the cost model");
+  }
+
   auto loc = op.getLoc();
   Value input = adaptor.getSrc();
   auto resultType = dyn_cast<RankedTensorType>(op.getResult().getType());

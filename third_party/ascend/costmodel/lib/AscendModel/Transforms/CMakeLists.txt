@@ -6,6 +6,8 @@ add_mlir_library(AscendModelTransforms
   HIVMAnalysisPass.cpp
   PipelineAnalysisPass.cpp
   PerfReportPass.cpp
+  SelectSimdSimtCostModel.cpp
+  MaterializeSimtScopes.cpp
   PassRegistration.cpp
 
   DEPENDS
@@ -16,6 +18,7 @@ add_mlir_library(AscendModelTransforms
   AscendModelIR
   AscendModelAnalysis
   MLIRIR
+  MLIRFunctionInterfaces
   MLIRPass
   MLIRSupport
   MLIRTransformUtils
@@ -23,6 +26,7 @@ add_mlir_library(AscendModelTransforms
   MLIRArithDialect
   MLIRMathDialect
   MLIRTensorDialect
+  LLVMSupport
 )
 
 # Conditionally link Triton dialect library and add dependency
