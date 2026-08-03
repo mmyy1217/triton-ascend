@@ -1699,6 +1699,11 @@ llvm::Expected<SimdSimtCostReport>
 mlir::ascend::estimateSimdSimtCandidates(
     const SimdSimtFeatureSummary &features,
     const SimdSimtCostModelOptions &options) {
+  // Stage 1: 输入校验与 profile 加载。
+  //
+  // features 已由 analyzeSimdSimtFeatures 提取完成；本函数只做候选方案
+  // 评分，不再遍历或修改 MLIR。所有吞吐率、校准边界和策略阈值都来自
+  // versioned profile，因此 profile 加载失败时无法继续评分。
   if (!std::isfinite(options.marginRatio) || options.marginRatio < 0.0)
     return llvm::createStringError(
         std::errc::invalid_argument,
@@ -1708,6 +1713,10 @@ mlir::ascend::estimateSimdSimtCandidates(
     return profileOrError.takeError();
   CandidateProfile profile = std::move(*profileOrError);
 
+  // Stage 2: 初始化报告的元数据和判定上下文。
+  //
+  // report.features 是输入特征的副本。后续若需要补算 warp instruction，
+  // 只会更新这份副本，不会修改调用方传入的 features。
   SimdSimtCostReport report;
   report.profileVersion = profile.profileVersion;
   report.profileTarget = profile.target;
@@ -1729,9 +1738,13 @@ mlir::ascend::estimateSimdSimtCandidates(
   report.includeFeaturesInJSON = options.includeFeaturesInJSON;
   report.marginRatio = options.marginRatio;
 
-  // Coverage is a validity check over extracted features, not a cost term.
-  // Evaluate it before all resource, structural, and transition scoring so
-  // production auto selection can reject out-of-domain kernels cheaply.
+  // Stage 3: 在正式算分前检查 calibration coverage。
+  //
+  // Coverage 是对“模型是否见过这类 kernel”的有效性检查，不是成本项。
+  // 它目前识别 tiny irregular dot、rank-1 indirect vector reduction 和
+  // masked row-wise reduction 三类 domain。production auto 模式会在这里
+  // 尽早拒绝超出校准域的 kernel；诊断模式则可以继续算分，但 score 仍然
+  // 会被标记为不可用于自动选择。
   const int64_t weightedReductions =
       mapValue(features.weightedOps, "reduce", features.reduceOps);
   const int64_t dotFlops = features.dotFlops;
@@ -1756,6 +1769,11 @@ mlir::ascend::estimateSimdSimtCandidates(
     return report;
   }
 
+  // Stage 4: 归一化基础规模，并找出模型无法完整计价的工作量。
+  //
+  // maxNumel/elementBits 决定 SIMD vector width 和缺省 SIMT warp 数量。
+  // gather、histogram、atomic 以及未分类算术目前没有完整 core cost，必须
+  // 记录到 unsupported；即使后面能产生候选分数，也不能通过最终 gate。
   const int64_t numWarps =
       std::max<int64_t>(1, static_cast<int64_t>(options.numWarps));
   const int64_t maxNumel = std::max<int64_t>(1, features.maxTensorNumel);
@@ -1788,6 +1806,11 @@ mlir::ascend::estimateSimdSimtCandidates(
     report.unsupported.push_back(std::to_string(unclassifiedScalarOps) +
                                  " unclassified arithmetic ops");
 
+  // Stage 5: 估算 SIMD/SIMT 的基础 resource cost。
+  //
+  // 算术部分按 opElements 和 profile throughput 逐类计价。SIMD 先把元素
+  // 数折算成 vector instructions，SIMT 则直接按 scalar work 计价；两边
+  // 的结果分别累加到 compute cycles，并收集对应测量项的 confidence。
   for (const auto &[opName, elements] : getProfileOpElements(features)) {
     if (elements <= 0)
       continue;
@@ -1817,6 +1840,8 @@ mlir::ascend::estimateSimdSimtCandidates(
     resourceConfidence.push_back(simt.confidence);
   }
 
+  // SIMD load/store 走不同的 MTE 通道，这里用 max 表示二者可重叠，
+  // 所以较慢的一侧决定 SIMD memory cost。
   report.breakdown.simdLoadCycles =
       features.loadBytes / profile.simdMte2BytesPerCycle;
   report.breakdown.simdStoreCycles =
@@ -1827,6 +1852,9 @@ mlir::ascend::estimateSimdSimtCandidates(
   if (features.loadBytes != 0.0 || features.storeBytes != 0.0)
     resourceConfidence.push_back(profile.simdMemoryConfidence);
 
+  // SIMT memory cost 按 warp instruction 计价。优先使用 feature analysis
+  // 已算出的精确数量；手工构造 feature 时缺失该字段，才退化为用 op 数量
+  // 和 maxNumel 推导。SIMT load/store 在当前模型中按相加处理。
   const int64_t loadWarpInstructions =
       features.loadWarpInstructions != 0
           ? features.loadWarpInstructions
@@ -1850,6 +1878,9 @@ mlir::ascend::estimateSimdSimtCandidates(
   if (loadWarpInstructions != 0 || storeWarpInstructions != 0)
     resourceConfidence.push_back(profile.simtMemoryConfidence);
 
+  // Reduction/scan 在 SIMT 上需要树形 shuffle；层数约为 log2(warpSize)。
+  // scan 的 shuffle 可以估算，但其 template ranking 尚未校准，因此仍需
+  // 记录 unsupported，防止该估值直接驱动 production auto selection。
   const int64_t weightedScans =
       mapValue(features.weightedOps, "scan", features.scanOps);
   if (weightedScans)
@@ -1865,6 +1896,7 @@ mlir::ascend::estimateSimdSimtCandidates(
   if (report.breakdown.simtShuffleInstructions != 0.0)
     resourceConfidence.push_back(profile.simtShuffleConfidence);
 
+  // Mask 的 rank sum 作为 predicate materialization 工作量的近似。
   report.breakdown.simtPredicateInstructions =
       static_cast<double>(features.maskRankSum) *
       std::ceil(static_cast<double>(maxNumel) / profile.simtWarpSize);
@@ -1872,6 +1904,8 @@ mlir::ascend::estimateSimdSimtCandidates(
       report.breakdown.simtPredicateInstructions /
       profile.simtPredicateRate;
 
+  // Dot 单独使用“固定启动成本 + FLOPs / 吞吐率”的模型，避免把矩阵计算
+  // 混入普通逐元素算术吞吐。
   if (dotFlops) {
     report.breakdown.simdDotCycles =
         profile.simdDotSetupCycles +
@@ -1883,6 +1917,10 @@ mlir::ascend::estimateSimdSimtCandidates(
     resourceConfidence.push_back(profile.simtDotConfidence);
   }
 
+  // Stage 6: 把各 resource term 合成为纯 SIMD 和纯 SIMT analytical cost。
+  //
+  // compute/dot 与 memory 取 max，近似二者可以重叠；SIMT predicate 作为
+  // 额外串行成本加在 max 之外。最后再加 setup，并应用统一的 issue scale。
   report.breakdown.simdSetupCycles = profile.simdSetupCycles;
   report.breakdown.simtSetupCycles = profile.simtSetupCycles;
   report.breakdown.simdIssuePayloadCycles =
@@ -1903,6 +1941,12 @@ mlir::ascend::estimateSimdSimtCandidates(
       profile.simtSetupCycles +
       report.breakdown.simtIssuePayloadCycles * profile.programIssueScale;
 
+  // Stage 7: 用 structural residual 修正基础吞吐模型对 AllSIMD 的乐观估计。
+  //
+  // irregular address、mask、reduction、静态循环、控制流、tiny dot 等结构
+  // 特征分别贡献一个带 cap 的 penalty ratio。它们不直接相加到 SIMD
+  // analytical cycles，而是以 SIMT analytical cost 为基准形成一个 SIMD
+  // floor；AllSIMD 最终取 analytical cost 和 structural floor 的较大值。
   const bool tinyDot =
       dotFlops > 0 && dotFlops <= profile.structural.tinyDotFlopsMax;
   report.breakdown.tinyDotUnderfill =
@@ -1954,6 +1998,11 @@ mlir::ascend::estimateSimdSimtCandidates(
   report.candidateCosts.allSimtOnly =
       report.breakdown.simtAnalyticalCycles;
 
+  // Stage 8: 估算 MixedSIMDSIMT 候选。
+  //
+  // mixed 启动成本取 profile 中 numWarps 最接近的一档 transition 测量。
+  // transitionDeltaCycles 仅用于解释“从独立 SIMT 到 mixed”多出的启动成本；
+  // 真正参与 mixed 总成本的是完整的 mixedSetupCycles。
   const TransitionProfile *nearestTransition = nullptr;
   for (const TransitionProfile &transition : profile.transitions)
     if (!nearestTransition ||
@@ -1971,6 +2020,9 @@ mlir::ascend::estimateSimdSimtCandidates(
       std::max(0.0, report.breakdown.mixedSetupCycles -
                         report.breakdown.standaloneSimtSetupCycles);
 
+  // mixedBlend 表示 mixed payload 中靠近 SIMD payload 的比例。循环、mask
+  // broadcast、reduction、控制流和 tiny dot 会按 profile 参数推动该比例，
+  // 最后再限制到 [0, mixedBlend.max]。
   double mixedBlend = profile.mixedBlend.base;
   mixedBlend +=
       std::min(profile.mixedBlend.loopCap,
@@ -1992,6 +2044,8 @@ mlir::ascend::estimateSimdSimtCandidates(
       std::min(profile.mixedBlend.max, std::max(0.0, mixedBlend));
   report.breakdown.mixedSimdFraction = mixedBlend;
 
+  // 去掉各自 setup 后，在线性插值的 payload 上加回完整 mixed setup。
+  // tiny dot 使用单独校准的 event-relative residual，会覆盖普通插值结果。
   double simdPayload =
       std::max(0.0, report.candidateCosts.allSimd -
                         profile.simdSetupCycles);
@@ -2015,6 +2069,11 @@ mlir::ascend::estimateSimdSimtCandidates(
         "tiny_dot_event_relative_underfill_residual";
   }
 
+  // Stage 9: 对三个候选排序，并计算相对 AllSIMD baseline 的有效收益。
+  //
+  // 分数越低越好。非 SIMD 候选获胜时，advantage 固定和 AllSIMD 比；
+  // AllSIMD 自己获胜时才使用 runner-up 与它的差。这样 route 改变必须超过
+  // max(64 cycles, allSimd * marginRatio)，微小的模型差异不会触发切换。
   report.candidateCostsEvaluated = true;
   sortAndUnique(report.unsupported);
   report.decision = chooseBest(report.candidateCosts);
@@ -2039,6 +2098,12 @@ mlir::ascend::estimateSimdSimtCandidates(
       report.candidateCosts.allSimtOnly / ratioDenominator,
       report.candidateCosts.mixedSimdSimt / ratioDenominator};
 
+  // Stage 10: 汇总 confidence，并执行最终 selection gate。
+  //
+  // confidence 采用所有实际使用资源项中的最低等级；涉及 structural
+  // ranking 时，还要纳入 ranking/transition calibration confidence。
+  // target、coverage、unsupported、confidence、收益门槛任一不满足，都会
+  // 写入 gateReasons。只有 gateReasons 为空，候选结果才允许驱动自动选择。
   report.absoluteConfidence = minimumConfidence(resourceConfidence);
   if (!report.unsupported.empty()) {
     report.rankingConfidence = "none";
