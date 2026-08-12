@@ -416,15 +416,17 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
       pm.addPass(mlir::triton::createAddDynamicCVPipelinePass(opts));
     });
 
-  m.def("set_buffer_count", [](const std::string& type, int count) {
+  m.def("set_buffer_count", [](OpState &op, const std::string& type,
+                              int count) {
+    mlir::triton::BufferCountManager mgr(op.getOperation());
     if (type == "INTRA") {
-      mlir::triton::BufferCountManager::getInstance().setBufferCount(
+      mgr.setBufferCount(
           mlir::triton::BufferCountManager::DepType::IntraCore, count);
     } else if (type == "INTER") {
-      mlir::triton::BufferCountManager::getInstance().setBufferCount(
+      mgr.setBufferCount(
           mlir::triton::BufferCountManager::DepType::InterCore, count);
     } else if (type == "LOAD") {
-      mlir::triton::BufferCountManager::getInstance().setBufferCount(
+      mgr.setBufferCount(
           mlir::triton::BufferCountManager::DepType::LoadStore, count);
     }
   });
