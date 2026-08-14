@@ -61,6 +61,7 @@ struct CoverageProfile {
   int64_t rowwiseMaxTensorNumel = 0;
   int64_t rank1WeightedReductionsMax = 0;
   int64_t rank1MaxTensorNumel = 0;
+  int64_t scalarControlFlowMaxTensorNumel = 0;
 };
 
 struct StructuralProfile {
@@ -742,6 +743,9 @@ loadCandidateProfile(llvm::StringRef requestedPath) {
           *coverage, "rank1_weighted_reductions_max", "coverage");
       profile.coverage.rank1MaxTensorNumel =
           reader.integer(*coverage, "rank1_max_tensor_numel", "coverage");
+      profile.coverage.scalarControlFlowMaxTensorNumel =
+          reader.integer(*coverage,
+                         "scalar_control_flow_max_tensor_numel", "coverage");
     }
 
     if (const auto *structural =
@@ -1142,6 +1146,11 @@ rankingCalibrationCoverage(const SimdSimtFeatureSummary &features,
       maskRankSum <= coverage.rowwiseMaskRankSumMax + 16 &&
       weightedReductions <= coverage.rowwiseWeightedReductionsMax)
     return {true, "triangular_solve_loop"};
+  if (dotFlops == 0 && features.hasControlFlow &&
+      features.hasUnknownTripCount &&
+      maxNumel <= coverage.scalarControlFlowMaxTensorNumel &&
+      features.simtAnchors.count == 0)
+    return {true, "scalar_control_flow"};
   if (features.hasUnknownTripCount)
     return {false, "unknown_loop_trip_count"};
   if (dotFlops > 0 && dotFlops <= coverage.tinyDotFlopsMax &&
@@ -1979,6 +1988,13 @@ mlir::ascend::analyzeSimdSimtFeatures(
         features.simtAnchors.staticLoopTripCountSum += tripCount;
       }
     }
+    if (name == "scf.while") {
+      features.hasUnknownTripCount = true;
+      ++features.staticLoopCount;
+      if (inAnchor) {
+        ++features.simtAnchors.staticLoopCount;
+      }
+    }
 
     auto dataTypeAndElements = [&](bool load)
         -> std::pair<Type, int64_t> {
@@ -2271,6 +2287,14 @@ mlir::ascend::estimateSimdSimtCandidates(
   report.calibrationCovered = covered;
   report.calibrationDomain = std::move(domain);
   report.selectionScoreValid = covered;
+  const bool noMixedBothNative =
+      !report.mixedCandidateLegal &&
+      report.allSimdCandidateLegal &&
+      report.allSimtOnlyCandidateLegal;
+  // Out-of-domain kernels with both native routes still get an analytical
+  // score; in-domain kernels are already covered and keep calibrated validity.
+  if (noMixedBothNative && !covered)
+    report.selectionScoreValid = true;
 
   const EventRouteCalibrationProfile *eventRouteCalibration = nullptr;
   if (report.calibrationCovered) {
@@ -2305,7 +2329,7 @@ mlir::ascend::estimateSimdSimtCandidates(
     }
   }
 
-  if (!report.calibrationCovered &&
+  if (!report.calibrationCovered && !noMixedBothNative &&
       !options.scoreOutsideCalibrationCoverage) {
     if (!report.targetCompatible)
       report.gateReasons.push_back("target_incompatible");
@@ -2796,6 +2820,8 @@ mlir::ascend::estimateSimdSimtCandidates(
   } else {
     report.rankingConfidence = report.absoluteConfidence;
   }
+  if (noMixedBothNative && !report.calibrationCovered)
+    report.rankingConfidence = "low";
   if (!report.targetCompatible)
     report.rankingConfidence = "none";
 
@@ -2805,7 +2831,8 @@ mlir::ascend::estimateSimdSimtCandidates(
     report.gateReasons.push_back("selection_score_invalid");
   if (!report.unsupported.empty())
     report.gateReasons.push_back("unsupported_cost_terms");
-  if (confidenceRank(report.rankingConfidence) <
+  if ((!noMixedBothNative || report.calibrationCovered) &&
+      confidenceRank(report.rankingConfidence) <
       confidenceRank(report.minimumConfidenceForDecision))
     report.gateReasons.push_back(
         "ranking_confidence_" + report.rankingConfidence + "_below_" +

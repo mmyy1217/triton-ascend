@@ -498,7 +498,7 @@ TEST(CostModelPassesTest, PerfReportPassAcceptsEstimatedPipeline) {
 }
 
 TEST(CostModelPassesTest,
-     SimdSimtCoverageShortCircuitIsAutoOnly) {
+     OutOfCoverageNoMixedCandidateAdmitsAutoAndScoresReport) {
   auto configureOptions =
       [](SelectSimdSimtCostModelPassOptions &options,
          llvm::StringRef mode) {
@@ -533,9 +533,11 @@ TEST(CostModelPassesTest,
   ASSERT_TRUE(autoEffective);
   ASSERT_TRUE(autoRecommended);
   ASSERT_TRUE(autoReport);
-  EXPECT_EQ(autoEffective.getValue(), "backend_default");
-  EXPECT_EQ(autoRecommended.getValue(), "backend_default");
-  EXPECT_FALSE(
+  // A no-anchor kernel has both native routes and no mixed candidate, so the
+  // noMixedBothNative bypass lets the analytical model admit it in auto mode.
+  EXPECT_EQ(autoEffective.getValue(), "all_simd");
+  EXPECT_EQ(autoRecommended.getValue(), "all_simd");
+  EXPECT_TRUE(
       (*autoModule)->hasAttr("ascend.simt_costmodel.all_simd_score"));
   auto autoJSON = llvm::json::parse(autoReport.getValue());
   ASSERT_TRUE(static_cast<bool>(autoJSON));
@@ -544,16 +546,18 @@ TEST(CostModelPassesTest,
   auto autoEvaluated =
       autoObject->getBoolean("candidate_costs_evaluated");
   ASSERT_TRUE(autoEvaluated);
-  EXPECT_FALSE(*autoEvaluated);
+  EXPECT_TRUE(*autoEvaluated);
   auto *autoCandidateCosts = autoObject->get("candidate_costs");
   auto *autoDecision = autoObject->get("decision_kind");
   ASSERT_NE(autoCandidateCosts, nullptr);
   ASSERT_NE(autoDecision, nullptr);
-  EXPECT_TRUE(autoCandidateCosts->getAsNull().has_value());
-  EXPECT_TRUE(autoDecision->getAsNull().has_value());
+  ASSERT_TRUE(autoCandidateCosts->getAsObject().has_value());
+  auto autoDecisionString = autoDecision->getAsString();
+  ASSERT_TRUE(autoDecisionString);
+  EXPECT_EQ(*autoDecisionString, "all_simd");
   auto autoReason = autoObject->getString("application_reason");
   ASSERT_TRUE(autoReason);
-  EXPECT_EQ(*autoReason, "selection_score_invalid");
+  EXPECT_EQ(*autoReason, "cpp_cost_model_admitted");
 
   mlir::MLIRContext reportContext;
   auto reportModule =

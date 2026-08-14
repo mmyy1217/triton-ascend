@@ -32,7 +32,8 @@
       "rowwise_weighted_reductions_max": 16,
       "rowwise_max_tensor_numel": 128,
       "rank1_weighted_reductions_max": 8,
-      "rank1_max_tensor_numel": 2048
+      "rank1_max_tensor_numel": 2048,
+      "scalar_control_flow_max_tensor_numel": 1
     },
     "simd_structural_penalty_ratio": {
       "description": "Additive SIMD-only residual ratios for irregular addressing, mask materialization, reductions, loops, control flow, tiny dot, and rank-1 indirect reduction patterns. Their sum multiplies A_SIMD; A_SIMT never participates in the all-SIMD cost.",
@@ -79,6 +80,15 @@
           "all_simt_only_validated": true,
           "mixed_simd_simt_validated": true,
           "source": "A5 card 0, solve-tril BT16/num_warps4, one process with routes interleaved after 50 warmup, 200 NPU Event samples each: median all-SIMD 22.1160 us, all-SIMT 21.9315 us, C++-materialized mixed 22.3130 us; all routes correctness PASS. The all-SIMT advantage is below the 10% production switch margin, so Post Check keeps the all-SIMD baseline.",
+          "confidence": "low"
+        },
+        "scalar_control_flow": {
+          "all_simd": 2.221327,
+          "all_simt_only": 1.0,
+          "mixed_simd_simt": 0.324638,
+          "all_simt_only_validated": false,
+          "mixed_simd_simt_validated": false,
+          "source": "A5 card 0, sglang compute_seg_indptr (binary search, grid=6, num_toks=64, int64), 100 NPU Event samples: median all-SIMD 1.98 us, all-SIMT 3.379 us, mixed 1.901 us. Mixed is 4% faster than SIMD, below 10% margin; model picks mixed nominally but gain gate keeps all-SIMD baseline. Single-point calibration: ratio may vary with num_toks (iteration count changes latency chain length). The mixed multiplier is inert in this domain because scalar_control_flow requires simt_anchors.count==0, so mixed is never selectable.",
           "confidence": "low"
         }
       }

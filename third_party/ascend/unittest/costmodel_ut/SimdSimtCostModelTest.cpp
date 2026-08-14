@@ -1,5 +1,7 @@
 #include "AscendModel/RouteModel/SimdSimtCostModel.h"
 
+#include <algorithm>
+
 #include <gtest/gtest.h>
 
 using mlir::ascend::SimdSimtCandidateKind;
@@ -134,6 +136,17 @@ SimdSimtFeatureSummary outOfCoverageFeatures() {
   return f;
 }
 
+// Out-of-domain with a materializable mixed candidate: the noMixedBothNative
+// bypass must not apply, so auto mode still early-exits at the coverage gate.
+SimdSimtFeatureSummary outOfCoverageWithMixedFeatures() {
+  SimdSimtFeatureSummary f = outOfCoverageFeatures();
+  f.simtAnchors.count = 1;
+  f.simtAnchors.recognizedCount = 1;
+  f.simtAnchors.mechanismKinds.push_back("loaded_index_dependent_memory");
+  f.observedMixedKinds.push_back("loaded_index_dependent_memory");
+  return f;
+}
+
 SimdSimtFeatureSummary rank1IndirectVectorReductionFeatures() {
   SimdSimtFeatureSummary f;
   f.reduceOps = 1;
@@ -180,6 +193,51 @@ SimdSimtFeatureSummary triangularUnknownLoopFeatures() {
   f.simtAnchors.maskRankSum = 36;
   f.simtAnchors.weightedOps["reduce"] = 8;
   f.simtAnchors.mechanismKinds.push_back("triangular_solve_loop");
+  return f;
+}
+
+SimdSimtFeatureSummary computeSegIndptrFeatures() {
+  SimdSimtFeatureSummary f;
+  f.loadOps = 1;
+  f.storeOps = 1;
+  f.addPtrOps = 3;
+  f.arithOps = 16;
+  f.addOps = 3;
+  f.subOps = 3;
+  f.divOps = 1;
+  f.cmpOps = 2;
+  f.castOps = 2;
+  f.selectOps = 1;
+  f.scalarOps = 12;
+  f.scalarLoadOps = 1;
+  f.scalarStoreOps = 1;
+  f.maxTensorNumel = 1;
+  f.maxElementBits = 0;
+  f.loadBytes = 8;
+  f.storeBytes = 8;
+  f.loadWarpInstructions = 1;
+  f.storeWarpInstructions = 1;
+  f.hasControlFlow = true;
+  f.hasUnknownTripCount = true;
+  f.hasExplicitScope = false;
+  f.simtAnchors.count = 0;
+  f.simtAnchors.maxTensorNumel = 1;
+  f.weightedOps["add"] = 3;
+  f.weightedOps["sub"] = 3;
+  f.weightedOps["div"] = 1;
+  f.weightedOps["cmp"] = 2;
+  f.weightedOps["cast"] = 2;
+  f.weightedOps["select"] = 1;
+  f.weightedOps["load"] = 1;
+  f.weightedOps["store"] = 1;
+  f.opElements["add"] = 3;
+  f.opElements["sub"] = 3;
+  f.opElements["div"] = 1;
+  f.opElements["cmp"] = 2;
+  f.opElements["cast"] = 2;
+  f.opElements["select"] = 1;
+  f.opElements["load"] = 1;
+  f.opElements["store"] = 1;
   return f;
 }
 
@@ -389,8 +447,8 @@ TEST(SimdSimtCostModelTest,
      OutOfCoverageAutoSkipsButDiagnosticsStillScore) {
   auto autoOptions = options(32);
   autoOptions.scoreOutsideCalibrationCoverage = false;
-  auto skipped =
-      estimateSimdSimtCandidates(outOfCoverageFeatures(), autoOptions);
+  auto skipped = estimateSimdSimtCandidates(
+      outOfCoverageWithMixedFeatures(), autoOptions);
   if (!skipped)
     FAIL() << llvm::toString(skipped.takeError());
 
@@ -413,11 +471,55 @@ TEST(SimdSimtCostModelTest,
   if (!diagnostic)
     FAIL() << llvm::toString(diagnostic.takeError());
 
+  // The noMixedBothNative bypass gives the out-of-domain kernel an analytical
+  // score, so selection_score_invalid is suppressed.
   EXPECT_FALSE(diagnostic->calibrationCovered);
-  EXPECT_FALSE(diagnostic->selectionScoreValid);
+  EXPECT_TRUE(diagnostic->selectionScoreValid);
   EXPECT_TRUE(diagnostic->candidateCostsEvaluated);
   EXPECT_GT(diagnostic->candidateCosts.allSimd, 0.0);
   EXPECT_GT(diagnostic->candidateCosts.allSimtOnly, 0.0);
   EXPECT_GT(diagnostic->candidateCosts.mixedSimdSimt, 0.0);
-  EXPECT_FALSE(diagnostic->gatePassed);
+  EXPECT_EQ(diagnostic->rankingConfidence, "low");
+  EXPECT_TRUE(std::find(diagnostic->gateReasons.begin(),
+                        diagnostic->gateReasons.end(),
+                        "selection_score_invalid") ==
+              diagnostic->gateReasons.end());
+}
+
+TEST(SimdSimtCostModelTest,
+     ScalarControlFlowDomainScoresAndAdmitsAllSimd) {
+  auto modelOptions = options(4);
+  modelOptions.scoreOutsideCalibrationCoverage = false;
+  auto report =
+      estimateSimdSimtCandidates(computeSegIndptrFeatures(), modelOptions);
+  if (!report)
+    FAIL() << llvm::toString(report.takeError());
+
+  EXPECT_TRUE(report->calibrationCovered);
+  EXPECT_EQ(report->calibrationDomain, "scalar_control_flow");
+  EXPECT_TRUE(report->selectionScoreValid);
+  EXPECT_TRUE(report->candidateCostsEvaluated);
+  EXPECT_TRUE(report->allSimdCandidateLegal);
+  EXPECT_TRUE(report->allSimtOnlyCandidateLegal);
+  EXPECT_FALSE(report->mixedCandidateLegal);
+  EXPECT_TRUE(report->eventRouteCalibrationApplied);
+  EXPECT_GT(report->candidateCosts.allSimd, 0.0);
+  EXPECT_GT(report->candidateCosts.allSimtOnly, 0.0);
+  EXPECT_LT(report->candidateCosts.allSimd,
+             report->candidateCosts.allSimtOnly);
+  EXPECT_DOUBLE_EQ(report->eventRouteScoreMultipliers.allSimd,
+                   2.221327);
+  EXPECT_DOUBLE_EQ(report->eventRouteScoreMultipliers.allSimtOnly, 1.0);
+  EXPECT_NEAR(report->candidateCosts.allSimd,
+              report->uncalibratedCandidateCosts.allSimd *
+                  report->eventRouteScoreMultipliers.allSimd,
+              1.0e-6);
+  EXPECT_NEAR(report->candidateCosts.allSimtOnly,
+              report->uncalibratedCandidateCosts.allSimtOnly *
+                  report->eventRouteScoreMultipliers.allSimtOnly,
+              1.0e-6);
+  EXPECT_EQ(report->decision, SimdSimtCandidateKind::AllSIMD);
+  EXPECT_EQ(report->rankingConfidence, "low");
+  EXPECT_TRUE(report->gatePassed);
+  EXPECT_TRUE(report->gateReasons.empty());
 }
