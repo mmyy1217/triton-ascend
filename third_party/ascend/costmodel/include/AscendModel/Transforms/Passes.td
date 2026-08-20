@@ -226,7 +226,10 @@ def SelectSimdSimtCostModelPass
            "Whether the target exposes the 910/95 SIMT lowering templates">,
     Option<"reportFile", "report-file", "std::string",
            /*default=*/"\"\"",
-           "Optional JSONL path for the C++ selection report">
+           "Optional JSONL path for the C++ selection report">,
+    Option<"forceMixRoute", "force-mix-route", "bool",
+           /*default=*/"false",
+           "Force effective decision to mixed_simd_simt regardless of score">
   ];
 }
 

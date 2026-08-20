@@ -152,7 +152,12 @@ struct SelectSimdSimtCostModelPass
         report.gateReasons.size() == 1 &&
         report.gateReasons.front() ==
             "decision_advantage_not_above_required_gain";
-    if (autoMode && report.gatePassed && actionSupported) {
+    if (forceMixRoute.getValue()) {
+      mixedAnchors = anchorPlan.materializableRoots();
+      effective = kMixedSimdSimt.str();
+      selectionSource = "force_mix_route";
+      applicationReason = "force_costmodel_mixroute_env";
+    } else if (autoMode && report.gatePassed && actionSupported) {
       effective = recommended;
       selectionSource = "cpp_cost_model";
       applicationReason = "cpp_cost_model_admitted";

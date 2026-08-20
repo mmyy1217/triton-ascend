@@ -71,7 +71,7 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
       [](mlir::PassManager &pm, const std::string &mode,
          const std::string &profilePath, const std::string &actualTarget,
          int64_t numWarps, double marginRatio, bool compileOn91095,
-         const std::string &reportFile) {
+         const std::string &reportFile, bool forceMixRoute) {
         mlir::ascend::SelectSimdSimtCostModelPassOptions opts;
         opts.mode = mode;
         opts.profilePath = profilePath;
@@ -80,11 +80,13 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
         opts.marginRatio = marginRatio;
         opts.compileOn91095 = compileOn91095;
         opts.reportFile = reportFile;
+        opts.forceMixRoute = forceMixRoute;
         pm.addPass(mlir::ascend::createSelectSimdSimtCostModelPass(opts));
       },
       py::arg("pm"), py::arg("mode"), py::arg("profile_path"),
       py::arg("actual_target"), py::arg("num_warps"), py::arg("margin_ratio"),
-      py::arg("compile_on_910_95"), py::arg("report_file") = "");
+      py::arg("compile_on_910_95"), py::arg("report_file") = "",
+      py::arg("force_mix_route") = false);
 
   m.def("add_materialize_simt_scopes", [](mlir::PassManager &pm) {
     pm.addPass(mlir::ascend::createMaterializeSimtScopesPass());

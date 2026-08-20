@@ -179,6 +179,7 @@ def _run_cpp_simd_simt_costmodel(mod, metadata, opt) -> str:
 
     profile = opt.auto_simt_model_profile or str(
         _costmodel_profiles_dir() / "simd_simt" / "david_v100_simd_simt_v1.json")
+    force_mix = os.environ.get("FORCE_COSTMODEL_MIXROUTE", "0") == "1"
     pm = ir.pass_manager(mod.context)
     pm.enable_debug()
     ascend.passes.ttir.add_select_simd_simt_costmodel(
@@ -190,6 +191,7 @@ def _run_cpp_simd_simt_costmodel(mod, metadata, opt) -> str:
         float(opt.auto_simt_scope_margin),
         bool(opt.compile_on_910_95),
         str(opt.auto_simt_scope_dump),
+        force_mix,
     )
     ascend.passes.ttir.add_materialize_simt_scopes(pm)
     pm.run(mod, "select_simd_simt_costmodel")

@@ -3,6 +3,7 @@ get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
 # triton-mlir-opt: Triton-Ascend optimizer combining MLIR and BishengIR dialects
 add_llvm_executable(triton-mlir-opt triton-mlir-opt.cpp PARTIAL_SOURCES_INTENDED)
 llvm_update_compile_flags(triton-mlir-opt)
+target_link_options(triton-mlir-opt PRIVATE -Wl,--unresolved-symbols=ignore-in-object-files)
 
 target_link_libraries(triton-mlir-opt PRIVATE
   ${triton_libs}
