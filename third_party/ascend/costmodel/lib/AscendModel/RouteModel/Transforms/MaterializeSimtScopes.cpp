@@ -53,6 +53,7 @@ static LogicalResult wrapAnchorOperation(Operation *op) {
   OperationState scopeState(op->getLoc(), "scope.scope");
   scopeState.addTypes(op->getResultTypes());
   scopeState.addAttribute(kVectorModeAttr, builder.getStringAttr("simt"));
+  scopeState.addAttribute(kLegacyVectorModeAttr, builder.getStringAttr("simt"));
   scopeState.addRegion();
   Operation *scopeOp = builder.create(scopeState);
 
@@ -121,6 +122,7 @@ static LogicalResult wrapAnchorRange(ArrayRef<Operation *> ops,
     escapingTypes.push_back(value.getType());
   scopeState.addTypes(escapingTypes);
   scopeState.addAttribute(kVectorModeAttr, builder.getStringAttr("simt"));
+  scopeState.addAttribute(kLegacyVectorModeAttr, builder.getStringAttr("simt"));
   scopeState.addRegion();
   Operation *scopeOp = builder.create(scopeState);
 
