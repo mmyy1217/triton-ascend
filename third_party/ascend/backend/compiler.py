@@ -76,6 +76,24 @@ def min_dot_size(target: GPUTarget):
     return lambda lhsType, rhsType: (1, 1, 1)
 
 
+_STAGECOST_DUMP_ENV = "TRITON_ASCEND_STAGECOST_IR_DUMP"
+
+
+def _dump_stagecost_ir(mod, stage_name: str, metadata) -> None:
+    dump_dir = os.environ.get(_STAGECOST_DUMP_ENV, "")
+    if not dump_dir:
+        return
+    import re
+    from pathlib import Path
+    mod_str = str(mod)
+    m = re.search(r"tt\.func\spublic\s+@(\w+)", mod_str)
+    kernel_name = m.group(1) if m else "unknown_kernel"
+    out_dir = Path(dump_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{kernel_name}_{stage_name}.ttir"
+    out_path.write_text(mod_str, encoding="utf-8")
+
+
 # Get result code saved in module {attr_name = rc}
 def _get_then_remove_rc(mod, attr_name: str) -> int:
     get_int_attr = getattr(ascend.ir, "get_int_attr", None)
@@ -240,6 +258,7 @@ def _run_cpp_simd_simt_costmodel(mod, metadata, opt) -> str:
     if not report or effective not in {"all_simd", "all_simt_only", "mixed_simd_simt", "backend_default"}:
         raise RuntimeError("invalid native SIMD/SIMT costmodel result")
     _apply_cpp_simd_simt_decision(metadata, effective, superblock_factor, report)
+    _dump_stagecost_ir(mod, "after_costmodel_scope", metadata)
     return effective
 
 
@@ -257,6 +276,7 @@ def _run_ttir_layout_merge(mod, metadata) -> None:
     metadata["ttir_layout_coalesce_factor"] = factor if isinstance(factor, int) and factor > 1 else 1
     metadata["ttir_layout_coalesce_axis"] = axis if isinstance(axis, int) and axis >= 0 else -1
     metadata["ttir_layout_coalesce_grid_ceil_div"] = bool(isinstance(ceil_div, int) and ceil_div > 0)
+    _dump_stagecost_ir(mod, "after_layout_merge", metadata)
 
 
 def _resolve_auto_blockify_v1_policy(ttir_code: str, metadata, opt) -> bool:
@@ -320,6 +340,7 @@ def _run_ta_simt_auto_blockify_v1(mod, metadata, opt, *, super_block_factor=None
     metadata["ta_auto_blockify_v1_materialized"] = materialized
     metadata["ta_auto_blockify_v1_physical_core_count"] = physical_vector_cores
     metadata["ta_auto_blockify_v1_super_block_factor"] = super_block_factor
+    _dump_stagecost_ir(mod, "after_auto_blockify_v1", metadata)
     return materialized
 
 
@@ -341,6 +362,7 @@ def _refine_ta_simt_auto_blockify_v1_superblock(mod, metadata, super_block_facto
     ascend.passes.ttir.add_refine_simt_auto_blockify_v1_superblock(pm, super_block_factor)
     pm.run(mod, "refine_ta_simt_auto_blockify_v1_superblock")
     metadata["ta_auto_blockify_v1_super_block_factor"] = super_block_factor
+    _dump_stagecost_ir(mod, "after_refine_superblock", metadata)
 
 
 def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
