@@ -1,6 +1,9 @@
-# Costmodel Dev Guide
+---
+name: costmodel-dev-guide
+description: Use when modifying the triton-ascend StageCostModel, including StageCostModel kinds, feature extraction, route solving, scope materialization, or compiler pipeline integration.
+---
 
-Use when developing or modifying the StageCostModel — adding new StageCostModel types, modifying route solving, adding new features, or extending the pipeline. Trigger when the user wants to modify the costmodel, add a new cost model, change routing logic, or add new analysis passes.
+# Costmodel Dev Guide
 
 ## Architecture overview
 
@@ -12,17 +15,19 @@ TTIR (make_ttir output)
   ├─ 1. Layout Merge          (TTIRLayoutMergePass)
   │     ImplicitPermute → StridedAxis → TileChunk → RowCoalescing → CSE
   │
-  ├─ 2. AutoBlockify V1       (SIMTAutoBlockifyV1.cpp)
-  │     Wraps function body in scf.for, replaces tt.get_program_id
+  ├─ 2. V1 policy resolution  (_resolve_auto_blockify_v1_policy)
+  │     Resolves availability only; does not rewrite TTIR
   │
   ├─ 3. Costmodel Pass        (SelectSimdSimtCostModel)
   │     3.1 Feature extraction  (analyzeSimdSimtFeatures)
   │     3.2 Stage partition    (StagePartitioner::partition)
-  │     3.3 Cost evaluation    (StageCostModels — 19 types)
+  │     3.3 Cost evaluation    (20 kinds; 9 model families per mode)
   │     3.4 Route solving       (solveStageRoutes — dynamic programming)
   │     3.5 Decision + scope materialization
   │
-  └─ 4. Post-processing       (metadata export, attribute cleanup)
+  └─ 4. Post-processing
+        all-SIMT only: materialize AutoBlockify V1, then refine SuperBlock
+        mixed: keep selected local anchor scopes for downstream lowering
 ```
 
 ## Key data structures
@@ -55,20 +60,20 @@ Per-route plan with:
 ## How to add a new StageCostModel type
 
 1. Add the enum value to `StageCostModelKind` in `StageCostModels.h`
-2. Implement the scoring logic in `StageCostModels.cpp` — follows the pattern of existing models
-3. Register the new type in `StagePartitioner.cpp` if it affects stage partitioning
-4. Add JSON serialization in the struct's `toJSON()` method
-5. The route solver (`solveStageRoutes` in `StageRouteCostModel.cpp`) automatically picks up new types via the cost table
+2. Update `stringifyStageCostModel` / `parseStageCostModel`
+3. Extend an existing SIMD/SIMT model family or register a paired family in `StageCostModels.cpp`
+4. Update Stage partition/classification only when the new kind needs new discovery evidence
+5. Add unit/lit coverage; JSON serialization follows the generic Stage structures
 
 ## How to modify route solving
 
-The route solver (`solveStageRoutes`) uses dynamic programming:
-1. For each stage, evaluate all three route kinds (AllSIMD / AllSIMTOnly / Mixed)
-2. Compute transition costs between adjacent stages
-3. Find the minimum-cost path through the stage graph
-4. The result is a `StageRoutePlan` with per-stage `StageImplementation` entries
+The route solver (`solveStageRoutes`) uses dynamic programming over `(exit mode, route class, route superblock factor)`:
+1. Enumerate legal SIMD/SIMT implementations and F1/F2/F4 factors per Stage
+2. Keep the cheapest prefix for each state
+3. For mixed routes, charge each physical local scope's two directional transitions and exact UB tensor handoff
+4. Produce AllSIMD / AllSIMTOnly / Mixed plans with per-Stage implementations
 
-To modify: edit `StageRouteCostModel.cpp`. The cost table is built by `StagePartitioner` from `StageCostModels`.
+Adjacent Stage labels do not add hardware transition cost (`entryTransitionCycles` is currently zero). `StageCostEvaluator`, not `StagePartitioner`, builds the cost table.
 
 ## How to add a new feature
 
@@ -89,7 +94,6 @@ To modify: edit `StageRouteCostModel.cpp`. The cost table is built by `StagePart
 
 - Use `TRITON_ASCEND_STAGECOST_IR_DUMP=<dir>` to dump TTIR after each stage
 - Use `TRITON_ASCEND_AUTO_SIMT_SCOPE_DUMP=<file>` to get the JSON report
-- Use `FORCE_COSTMODEL_MIXROUTE=1` to force mixed route for testing scope materialization
 - For pass-level IR inspection, use `--mlir-print-ir-after-all` on bishengir-compile
 - The costmodel C++ code can be built locally (pass-level verification only, no NPU runtime needed)
 

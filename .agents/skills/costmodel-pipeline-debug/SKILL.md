@@ -1,6 +1,9 @@
-# Costmodel Pipeline Debug
+---
+name: costmodel-pipeline-debug
+description: Use when debugging triton-ascend StageCostModel IR dumps, pass failures, unexpected route decisions, AutoBlockify V1 behavior, or SIMT scope materialization.
+---
 
-Use when debugging the StageCostModel compilation pipeline — IR dumps, pass failures, scope materialization issues, or unexpected routing decisions. Trigger when the user mentions IR dump, pass failure, scope materialization, or wants to trace the compilation flow step by step.
+# Costmodel Pipeline Debug
 
 ## Pipeline stages and IR dumps
 
@@ -15,6 +18,8 @@ Set `TRITON_ASCEND_STAGECOST_IR_DUMP=<dir>` to dump intermediate TTIR after each
 
 Additionally, the JSON report is available via `TRITON_ASCEND_AUTO_SIMT_SCOPE_DUMP=<file>`.
 
+The JSON dump appends JSONL; StageCost IR files with the same kernel/stage name are overwritten. A compile-cache hit may skip the pass and produce no new dump.
+
 The existing `opt.debug=True` dumps (coarser-grained):
 - `kernel.ttir.mlir` — before any costmodel passes
 - `kernel.ttadapter.mlir` — after all costmodel + triton_adapter lowering
@@ -26,29 +31,29 @@ The existing `opt.debug=True` dumps (coarser-grained):
 ### 1. "Costmodel chose the wrong route"
 
 1. Get the JSON report (`TRITON_ASCEND_AUTO_SIMT_SCOPE_DUMP=<file>`)
-2. Check `candidateCosts` — are the scores plausible?
+2. Check `candidate_costs` — are the scores plausible?
 3. Dump IR before costmodel (`after_layout_merge`) and inspect the kernel structure
-4. Check `features` — did Layout Merge / AutoBlockify V1 run as expected?
-5. If scores look wrong, the issue is in the costmodel's StageCostModel evaluation — check `stageModel.stages` for per-stage costs
+4. Check `features.post_transform` — Layout Merge should be visible; normal online scoring sees V1 as not yet materialized
+5. If `stage_model.applied=true`, inspect `stage_model.logical_stages`; otherwise diagnose the aggregate analytical fallback
 
 ### 2. "Scope materialization failed or scopes disappeared"
 
 1. Check `materialized_simt_anchor_count` in the report — if 0, no anchors were found
 2. Dump `after_costmodel_scope.ttir` and search for `scope.scope` ops
-3. If scopes exist in TTIR but disappear in NPUIR output, check bishengir's `InlineScopePass` and `AutoScopePass` — they check `vector_type` attribute (not `vector_mode`)
-4. The fix in `MaterializeSimtScopes.cpp` writes both `vector_mode` and `vector_type` attributes to ensure compatibility
+3. Confirm each scope has `vector_mode = "simt"`; `MaterializeSimtScopes.cpp` writes this attribute only
+4. If the scope disappears later, trace `TritonToLinalg` and downstream scope passes; the TTIR converter consumes `vector_mode`
 
 ### 3. "Layout Merge didn't fire"
 
 1. Dump `after_layout_merge.ttir` and compare with `kernel.ttir.mlir`
 2. If identical, Layout Merge didn't match any pattern
-3. Check `features.ttirLayoutMergeApplied` and `features.coalesceFactor` in the report
+3. Check `features.post_transform.ttir_layout_merge_applied` and `features.post_transform.coalesce_factor` in the report
 4. Layout Merge only runs when `compile_mode == "simd_simt" and auto_simt_scope_mode != "off"`
 5. The four sub-passes (ImplicitPermute → StridedAxis → TileChunk → RowCoalescing) each match specific patterns — if none match, the kernel's access pattern isn't recognized
 
 ### 4. "AutoBlockify V1 didn't fire"
 
-1. Check `metadata["ta_auto_blockify_v1_materialized"]` — if False, V1 skipped
+1. Check `metadata["ta_auto_blockify_v1_materialized"]` — if False, V1 skipped; this metadata is not a JSON report field
 2. Common skip reasons: `has_auto_blockify_blacklist_op=True`, `enable_ta_auto_blockify_v1=False`
 3. V1 only transforms entry kernels (`tt.func` with public visibility and no return values)
 4. V1 requires `tt.get_program_id` ops in the function body
@@ -68,8 +73,7 @@ The existing `opt.debug=True` dumps (coarser-grained):
 | `TRITON_ASCEND_AUTO_SIMT_SCOPE=auto` | Enable costmodel auto selection |
 | `TRITON_ASCEND_AUTO_SIMT_SCOPE_DUMP=<file>` | Dump JSON report to file (JSONL) |
 | `TRITON_ASCEND_STAGECOST_IR_DUMP=<dir>` | Dump intermediate TTIR after each stage |
-| `TRITON_ASCEND_AUTO_SIMT_SCOPE_MARGIN=0.05` | Adjust gain margin threshold (default 0.10) |
-| `FORCE_COSTMODEL_MIXROUTE=1` | Force costmodel to select mixed (bypass gate) |
+| `TRITON_ASCEND_AUTO_SIMT_PROFILE=<file>` | Override the SIMD/SIMT profile |
 
 ## Key source files
 
@@ -83,7 +87,7 @@ The existing `opt.debug=True` dumps (coarser-grained):
 - `third_party/ascend/costmodel/lib/AscendModel/RouteModel/` — C++ costmodel
   - `SelectSimdSimtCostModel.cpp` — Pass that runs costmodel + materializes scopes
   - `StagePartitioner.cpp` — Phase/Stage划分
-  - `StageCostModels.cpp` — 19 StageCostModel types
+  - `StageCostModels.cpp` — 20 kinds mapped to 9 model families per mode
   - `StageRouteCostModel.cpp` — Dynamic programming route solver
   - `SimdSimtCostModel.cpp` — Top-level analysis + scoring
 - `third_party/ascend/lib/AutoBlockifyV1/SIMTAutoBlockifyV1.cpp` — AutoBlockify V1 pass
