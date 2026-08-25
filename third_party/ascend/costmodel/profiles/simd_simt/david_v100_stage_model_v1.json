@@ -1,9 +1,9 @@
 {
-  "$schema": "./simd_simt_profile_schema.json",
-  "schema_version": 10,
-  "profile_version": "david-v100-simd-simt-20260820-v17",
+  "$schema": "./stage_model_profile_schema.json",
+  "schema_version": 11,
+  "profile_version": "david-v100-stage-model-20260825-v18",
   "target": "Ascend950PR/dav-c310",
-  "description": "Stage StageModel hardware profile. Stage partitions and workloads are generated online from transformed TTIR; this file contains no workload-specific Stage template or route multiplier.",
+  "description": "StageModel hardware profile. Stage candidates and workloads are generated online from transformed TTIR.",
   "microbenchmark_profile": "../microbench/ascend_davidv100_v1.json",
   "compatible_targets": [
     "Ascend950*",
@@ -11,27 +11,8 @@
     "dav-c310"
   ],
   "score_unit": "system_cycle_selection_score",
-  "selection_calibration": {
-    "description": "Cost parameters used by Stage models. They influence numerical cost only; coverage, confidence, Event validation, and gain-margin admission gates are not part of online route selection.",
-    "program_issue_scale": 8.0,
-    "source": "Stage costs are calibrated from shared microbenchmarks and the same-shape, one-physical-core Ascend950PR_9599 solve_tril CaModel runs. Event data is retained outside the online profile as validation evidence, not as a route multiplier or admission gate.",
-    "simd_structural_penalty_ratio": {
-      "description": "Additive SIMD-only residual ratios for irregular addressing, mask materialization, reductions, loops, control flow, tiny dot, and rank-1 indirect reduction patterns. Their sum multiplies A_SIMD; A_SIMT never participates in the all-SIMD cost.",
-      "irregular_per_density": 0.8,
-      "irregular_cap": 0.5,
-      "tiny_dot_irregular_per_density": 0.24,
-      "tiny_dot_irregular_cap": 0.12,
-      "per_mask_rank": 0.022,
-      "mask_cap": 0.35,
-      "per_weighted_reduction": 0.02,
-      "reduction_cap": 0.15,
-      "per_static_loop_trip": 0.008,
-      "loop_cap": 0.15,
-      "control_flow": 0.03,
-      "rank1_indirect_vector_reduction": 0.75,
-      "tiny_dot": 0.06,
-      "tiny_dot_flops_max": 16384
-    }
+  "stage_discovery": {
+    "tiny_dot_flops_max": 16384
   },
   "simd": {
     "description": "Inputs used to estimate the all-SIMD candidate: SIMD width, setup, operation, memory, and dot costs.",
@@ -298,34 +279,6 @@
         "description": "Only exact tensor values captured by or returned from scope.scope are charged. A value crosses the distinct SIMD/SIMT register files through UB: producer store plus consumer load. SIMD rates reflect the 256-byte vector width with two load and one store issue slots; SIMT rates are explicitly per active thread and are aggregated over one logical warp."
       },
       "source": "Ascend950 SIMT issue limits plus provisional conservative dependency/reconvergence, SuperBlock state-pressure, and scope hand-off rates; replace numeric seeds only through versioned CaModel/microbenchmark evidence."
-    },
-    "mixed_setup_fallback": {
-      "1": {
-        "description": "Low-confidence mixed setup fallback for one warp, sourced from a standalone empty-VF net probe rather than a mixed transition.",
-        "measurement": "simt.setup.transition_harness_net.warps_1"
-      },
-      "2": {
-        "description": "Low-confidence mixed setup fallback for two warps, sourced from a standalone empty-VF net probe rather than a mixed transition.",
-        "measurement": "simt.setup.transition_harness_net.warps_2"
-      },
-      "4": {
-        "description": "Low-confidence mixed setup fallback for four warps, sourced from a standalone empty-VF net probe rather than a mixed transition.",
-        "measurement": "simt.setup.transition_harness_net.warps_4"
-      },
-      "8": {
-        "description": "Low-confidence mixed setup fallback for eight warps, sourced from a standalone empty-VF net probe rather than a mixed transition.",
-        "measurement": "simt.setup.transition_harness_net.warps_8"
-      },
-      "16": {
-        "description": "Low-confidence mixed setup fallback for sixteen warps, sourced from a standalone empty-VF net probe rather than a mixed transition.",
-        "measurement": "simt.setup.transition_harness_net.warps_16"
-      },
-      "32": {
-        "description": "Low-confidence mixed setup fallback for thirty-two warps, sourced from a standalone empty-VF net probe rather than a mixed transition.",
-        "measurement": "simt.setup.transition_harness_net.warps_32"
-      },
-      "confidence": "low",
-      "note": "These values are mode1(empty SIMT plus tail barrier) minus mode6(barrier only) in a branch-heavy harness. They contain no SIMD phase and are used only as conservative setup fallbacks. Directional SIMD-to-SIMT, SIMT-to-SIMD, and dependent UB hand-off costs remain unmeasured."
     }
   }
 }

@@ -207,7 +207,7 @@ def _run_cpp_simd_simt_costmodel(mod, metadata, opt) -> str:
         return "backend_default"
 
     profile = opt.auto_simt_model_profile or str(
-        _costmodel_profiles_dir() / "simd_simt" / "david_v100_simd_simt_v1.json")
+        _costmodel_profiles_dir() / "simd_simt" / "david_v100_stage_model_v1.json")
     pm = ir.pass_manager(mod.context)
     pm.enable_debug()
     whole_kernel_superblock_materializable = bool(opt.compile_on_910_95 and opt.enable_auto_blockify is not False)
@@ -1563,7 +1563,7 @@ class NPUOptions:
         if self.auto_simt_scope_mode == "off":
             dump, profile, asset_hash = "", "", "disabled"
         else:
-            asset_hash = _auto_simt_asset_hash(profile, "simd_simt/david_v100_simd_simt_v1.json")
+            asset_hash = _auto_simt_asset_hash(profile, "simd_simt/david_v100_stage_model_v1.json")
         object.__setattr__(self, "auto_simt_scope_dump", dump)
         object.__setattr__(self, "auto_simt_model_profile", profile)
         object.__setattr__(self, "auto_simt_model_assets_hash", asset_hash)

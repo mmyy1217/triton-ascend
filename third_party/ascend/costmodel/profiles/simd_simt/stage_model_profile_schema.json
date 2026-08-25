@@ -1,0 +1,551 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "stage_model_profile_schema.json",
+  "title": "Ascend SIMD/SIMT StageModel profile",
+  "description": "Target-specific hardware resource profile consumed by the online Stage Cost Model. Stage partitions and workloads are derived from transformed TTIR.",
+  "$comment": "Standard JSON has no // comments. Property descriptions in this schema are the canonical field comments for StageModel profiles.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "profile_version",
+    "target",
+    "description",
+    "microbenchmark_profile",
+    "compatible_targets",
+    "score_unit",
+    "stage_discovery",
+    "simd",
+    "simt"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Relative path to this JSON Schema; used by editors and offline validators, not by StageModel scoring."
+    },
+    "schema_version": {
+      "const": 11,
+      "description": "Machine-readable StageModel hardware-profile layout."
+    },
+    "profile_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Version identifier accepted by the C++ StageModel loader and emitted in decision reports."
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Canonical target for this calibration; it must equal the target of the referenced shared microbenchmark profile."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable ownership boundary and purpose of this StageModel profile."
+    },
+    "microbenchmark_profile": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path, relative to this file, to the model-neutral hardware measurement profile."
+    },
+    "compatible_targets": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Additional wildcard target aliases accepted by the target-compatibility gate.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "One case-insensitive wildcard target pattern; '*' and '?' are supported."
+      }
+    },
+    "score_unit": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unit label for candidate scores. Values retain SYS_CNT-cycle structure but are selection scores after empirical residual calibration."
+    },
+    "stage_discovery": {
+      "$ref": "#/definitions/stage_discovery"
+    },
+    "simd": {
+      "$ref": "#/definitions/simd_model"
+    },
+    "simt": {
+      "$ref": "#/definitions/simt_model"
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "confidence": {
+      "type": "string",
+      "enum": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ],
+      "description": "Evidence confidence ordered as none < low < medium < high."
+    },
+    "stage_discovery": {
+      "type": "object",
+      "required": ["tiny_dot_flops_max"],
+      "properties": {
+        "tiny_dot_flops_max": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum dot FLOPs classified as a tiny-dot Stage."
+        }
+      },
+      "additionalProperties": false
+    },
+    "simd_model": {
+      "type": "object",
+      "description": "All-SIMD resource and operation model.",
+      "required": [
+        "description",
+        "vector_width_measurement",
+        "startup_system_cycles",
+        "ops",
+        "memory",
+        "dot",
+        "stage_resources"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable role of the all-SIMD model."
+        },
+        "vector_width_measurement": {
+          "type": "string",
+          "description": "Shared measurement key for physical SIMD vector width in bits."
+        },
+        "vector_width_bits": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Inline SIMD vector-width fallback supported by the loader when no measurement key is provided."
+        },
+        "startup_system_cycles": {
+          "$ref": "#/definitions/simd_startup"
+        },
+        "ops": {
+          "$ref": "#/definitions/op_profiles"
+        },
+        "memory": {
+          "$ref": "#/definitions/simd_memory"
+        },
+        "dot": {
+          "$ref": "#/definitions/dot_model"
+        },
+        "stage_resources": {
+          "$ref": "#/definitions/stage_resources"
+        }
+      },
+      "additionalProperties": false
+    },
+    "simd_startup": {
+      "type": "object",
+      "description": "Legacy all-SIMD startup priors in SYS_CNT cycles.",
+      "required": [
+        "description",
+        "vector",
+        "mte2",
+        "mte3",
+        "source",
+        "confidence",
+        "note"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable status and current consumption boundary of these startup priors."
+        },
+        "vector": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Fixed all-SIMD vector setup cost in SYS_CNT cycles; this is the only startup value currently consumed."
+        },
+        "mte2": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Legacy MTE2 startup prior in SYS_CNT cycles; currently not consumed by StageModel scoring."
+        },
+        "mte3": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Legacy MTE3 startup prior in SYS_CNT cycles; currently not consumed by StageModel scoring."
+        },
+        "source": {
+          "type": "string",
+          "description": "Origin of the startup priors."
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "none",
+            "low",
+            "medium",
+            "high"
+          ],
+          "description": "Documentary confidence of the legacy startup priors; the current StageModel loader does not consume it."
+        },
+        "note": {
+          "type": "string",
+          "description": "Evidence caveat retained for human review; not consumed by scoring."
+        }
+      },
+      "additionalProperties": false
+    },
+    "simd_memory": {
+      "type": "object",
+      "description": "All-SIMD memory rates and their model-specific provenance.",
+      "required": [
+        "description",
+        "hbm_bytes_per_system_cycle",
+        "vector_mte2_bytes_per_system_cycle",
+        "mte3_bytes_per_system_cycle",
+        "source",
+        "confidence",
+        "note"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable role and consumption boundary of these rates."
+        },
+        "hbm_bytes_per_system_cycle": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Legacy whole-device HBM-rate seed in byte/SYS_CNT-cycle; currently not consumed by StageModel scoring."
+        },
+        "vector_mte2_bytes_per_system_cycle": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "All-SIMD load-path rate in byte/SYS_CNT-cycle; load cycles equal load bytes divided by this value."
+        },
+        "mte3_bytes_per_system_cycle": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "All-SIMD store-path rate in byte/SYS_CNT-cycle; store cycles equal store bytes divided by this value."
+        },
+        "source": {
+          "type": "string",
+          "description": "Origin and validity caveat of these model-specific rates."
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "none",
+            "low",
+            "medium",
+            "high"
+          ],
+          "description": "Confidence of the all-SIMD memory rates; when load or store work exists, it contributes to the resource-confidence minimum used by the gate."
+        },
+        "note": {
+          "type": "string",
+          "description": "Warning that these are fallback StageModel inputs rather than shared isolated measurements."
+        }
+      },
+      "additionalProperties": false
+    },
+    "dot_model": {
+      "type": "object",
+      "description": "Fixed setup plus throughput model for dot work.",
+      "required": [
+        "description",
+        "startup_system_cycles",
+        "flops_per_system_cycle",
+        "source",
+        "confidence"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable role and execution mode of this dot model."
+        },
+        "startup_system_cycles": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Fixed dot setup cost in SYS_CNT cycles."
+        },
+        "flops_per_system_cycle": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Modeled dot arithmetic rate in FLOP per SYS_CNT cycle."
+        },
+        "source": {
+          "type": "string",
+          "description": "Origin and intended refinement path for the dot prior."
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "none",
+            "low",
+            "medium",
+            "high"
+          ],
+          "description": "Confidence of this dot prior; when dot work exists, it contributes to the resource-confidence minimum used by the gate."
+        }
+      },
+      "additionalProperties": false
+    },
+    "simt_model": {
+      "type": "object",
+      "description": "All-SIMT resources consumed by Stage cost models.",
+      "required": [
+        "description",
+        "warp_size_measurement",
+        "setup_system_cycles",
+        "ops",
+        "dot",
+        "camodel_effective",
+        "shuffle",
+        "memory",
+        "stage_resources"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable role of the all-SIMT and mixed-mode inputs."
+        },
+        "warp_size_measurement": {
+          "type": "string",
+          "description": "Shared measurement key for the number of scalar lanes in one SIMT warp."
+        },
+        "warp_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Inline warp-size fallback supported by the loader when no measurement key is provided."
+        },
+        "setup_system_cycles": {
+          "$ref": "#/definitions/simt_setup"
+        },
+        "ops": {
+          "$ref": "#/definitions/op_profiles"
+        },
+        "dot": {
+          "$ref": "#/definitions/dot_model"
+        },
+        "camodel_effective": {
+          "$ref": "#/definitions/camodel_effective"
+        },
+        "shuffle": {
+          "$ref": "#/definitions/simt_shuffle"
+        },
+        "memory": {
+          "$ref": "#/definitions/simt_memory"
+        },
+        "stage_resources": {
+          "$ref": "#/definitions/stage_resources"
+        }
+      },
+      "additionalProperties": false
+    },
+    "simt_setup": {
+      "type": "object",
+      "description": "Standalone SIMT setup cost.",
+      "required": [
+        "description",
+        "empty_launch_measurement"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable meaning and source boundary of the setup cost."
+        },
+        "empty_launch_measurement": {
+          "type": "string",
+          "description": "Shared measurement key for standalone empty-SIMT setup in SYS_CNT cycles."
+        },
+        "empty_launch": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Inline empty-SIMT setup fallback in SYS_CNT cycles."
+        }
+      },
+      "additionalProperties": false
+    },
+    "camodel_effective": {
+      "type": "object",
+      "description": "Workload-effective CaModel rates retained as fallback calibration context.",
+      "required": [
+        "description",
+        "scope",
+        "simulator_clock_mhz",
+        "conversion",
+        "warp_instructions_per_system_cycle",
+        "warp_size",
+        "source",
+        "confidence",
+        "note"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable warning that only part of this block is currently consumed."
+        },
+        "scope": {
+          "type": "string",
+          "description": "Workload and active-vector-core scope from which these effective rates were derived."
+        },
+        "simulator_clock_mhz": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Clock used by the simulator-cycle measurements before conversion to SYS_CNT cycles."
+        },
+        "conversion": {
+          "type": "string",
+          "description": "Documentary formula used to convert aggregate simulator-cycle rates into SYS_CNT-cycle rates; not evaluated by the loader."
+        },
+        "warp_instructions_per_system_cycle": {
+          "$ref": "#/definitions/camodel_rates"
+        },
+        "warp_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Warp size assumed by the CaModel workload. The current loader uses simt.warp_size_measurement instead."
+        },
+        "source": {
+          "type": "string",
+          "description": "CaModel artifact and profiling run that produced these workload-effective rates."
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "none",
+            "low",
+            "medium",
+            "high"
+          ],
+          "description": "Documentary confidence of the complete CaModel workload-effective block; the current loader does not propagate it to predicate-cost confidence or the gate."
+        },
+        "note": {
+          "type": "string",
+          "description": "Warning that these values include workload dependencies and stalls and are not isolated peak rates."
+        }
+      },
+      "additionalProperties": false
+    },
+    "camodel_rates": {
+      "type": "object",
+      "description": "Workload-effective aggregate warp-instruction issue rates in warp instructions per SYS_CNT cycle. The current loader consumes only predicate.",
+      "required": [
+        "memory",
+        "float_alu",
+        "shuffle",
+        "predicate",
+        "control",
+        "int_alu"
+      ],
+      "properties": {
+        "memory": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Effective memory warp-instruction rate; retained as context and not currently consumed."
+        },
+        "float_alu": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Effective floating-point ALU warp-instruction rate; retained as context and not currently consumed."
+        },
+        "shuffle": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Effective shuffle warp-instruction rate; isolated shared measurement is used instead."
+        },
+        "predicate": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Effective predicate warp-instruction rate consumed to estimate mask predicate cycles."
+        },
+        "control": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Effective control warp-instruction rate; retained as context and not currently consumed."
+        },
+        "int_alu": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Effective integer-ALU warp-instruction rate; retained as context and not currently consumed."
+        }
+      },
+      "additionalProperties": false
+    },
+    "simt_shuffle": {
+      "type": "object",
+      "description": "SIMT shuffle issue-rate input.",
+      "required": [
+        "description",
+        "throughput_measurement"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable meaning and source boundary of the shuffle rate."
+        },
+        "throughput_measurement": {
+          "type": "string",
+          "description": "Shared measurement key for shuffle throughput in warp instructions per SYS_CNT cycle."
+        },
+        "warp_instructions_per_system_cycle": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Inline shuffle-throughput fallback supported by the loader."
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "none",
+            "low",
+            "medium",
+            "high"
+          ],
+          "description": "Optional explicit shuffle confidence; otherwise confidence is inherited from the referenced shared measurement and contributes to the gate when shuffle work exists."
+        }
+      },
+      "additionalProperties": false
+    },
+    "simt_memory": {
+      "type": "object",
+      "description": "SIMT GM load/store warp-instruction issue-rate inputs.",
+      "required": [
+        "description",
+        "load_throughput_measurement",
+        "store_throughput_measurement"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable meaning and source boundary of the SIMT memory rates."
+        },
+        "load_throughput_measurement": {
+          "type": "string",
+          "description": "Shared measurement key for GM-load throughput in warp instructions per SYS_CNT cycle."
+        },
+        "store_throughput_measurement": {
+          "type": "string",
+          "description": "Shared measurement key for GM-store throughput in warp instructions per SYS_CNT cycle."
+        },
+        "load_warp_instructions_per_system_cycle": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Inline GM-load throughput fallback supported by the loader."
+        },
+        "store_warp_instructions_per_system_cycle": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Inline GM-store throughput fallback supported by the loader."
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "none",
+            "low",
+            "medium",
+            "high"
+          ],
+          "description": "Optional explicit SIMT-memory confidence; otherwise the lower confidence of the referenced load/store measurements is used when memory work exists."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

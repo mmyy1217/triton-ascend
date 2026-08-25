@@ -696,10 +696,10 @@ loadCandidateProfile(llvm::StringRef requestedPath) {
     return llvm::createStringError(std::errc::invalid_argument,
                                    "SIMD/SIMT profile root must be an object");
   auto selectionSchemaVersion = root->getInteger("schema_version");
-  if (!selectionSchemaVersion || *selectionSchemaVersion != 10)
+  if (!selectionSchemaVersion || *selectionSchemaVersion != 11)
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "SIMD/SIMT profile schema_version must be 10");
+        "StageModel profile schema_version must be 11");
 
   CandidateProfile profile;
   ProfileJSONReader reader;
@@ -739,16 +739,10 @@ loadCandidateProfile(llvm::StringRef requestedPath) {
         reader.setError("profile.compatible_targets entries must be strings");
     }
   }
-  const auto *calibration =
-      reader.object(*root, "selection_calibration", "profile");
-  if (calibration) {
-    if (const auto *structural =
-            reader.object(*calibration, "simd_structural_penalty_ratio",
-                          "profile.selection_calibration")) {
-      profile.structural.tinyDotFlopsMax =
-          reader.integer(*structural, "tiny_dot_flops_max", "structural");
-    }
-  }
+  if (const auto *discovery =
+          reader.object(*root, "stage_discovery", "profile"))
+    profile.structural.tinyDotFlopsMax =
+        reader.integer(*discovery, "tiny_dot_flops_max", "stage_discovery");
 
   const auto *simd = reader.object(*root, "simd", "profile");
   if (simd) {
@@ -972,20 +966,20 @@ loadCandidateProfile(llvm::StringRef requestedPath) {
     return llvm::createStringError(
         std::errc::invalid_argument, "invalid SIMD/SIMT profile '%s': %s",
         path.c_str(), reader.getError().str().c_str());
-  if (profile.profileVersion != "david-v100-simd-simt-20260820-v17")
+  if (profile.profileVersion != "david-v100-stage-model-20260825-v18")
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "unsupported SIMD/SIMT profile version '%s' "
-        "(expected david-v100-simd-simt-20260820-v17)",
+        "unsupported StageModel profile version '%s' "
+        "(expected david-v100-stage-model-20260825-v18)",
         profile.profileVersion.c_str());
   const bool usesSharedMicrobench = true;
   if (usesSharedMicrobench && !microbench)
     return llvm::createStringError(std::errc::invalid_argument,
-                                   "SIMD/SIMT v17 profile must reference "
+                                   "StageModel v18 profile must reference "
                                    "microbenchmark_profile");
-  if (*selectionSchemaVersion != 10)
+  if (*selectionSchemaVersion != 11)
     return llvm::createStringError(std::errc::invalid_argument,
-                                   "SIMD/SIMT v17 requires schema_version 10");
+                                   "StageModel v18 requires schema_version 11");
   if (profile.simdVectorWidthBits <= 0 || profile.simtWarpSize <= 0 ||
       profile.simdMte2BytesPerCycle <= 0.0 ||
       profile.simdMte3BytesPerCycle <= 0.0 || profile.simtLoadWarpRate <= 0.0 ||
