@@ -24,4 +24,8 @@ target_link_libraries(triton-mlir-opt PRIVATE
   BiShengIRTensorDialect
 )
 
+if("nvidia" IN_LIST TRITON_CODEGEN_BACKENDS)
+  target_link_libraries(triton-mlir-opt PRIVATE TritonNVIDIAGPUToLLVM)
+endif()
+
 mlir_check_all_link_libraries(triton-mlir-opt)
