@@ -55,25 +55,7 @@ struct OpProfile {
 };
 
 struct StructuralProfile {
-  double irregularPerDensity = 0.0;
-  double irregularCap = 0.0;
-  double tinyDotIrregularPerDensity = 0.0;
-  double tinyDotIrregularCap = 0.0;
-  double perMaskRank = 0.0;
-  double maskCap = 0.0;
-  double perWeightedReduction = 0.0;
-  double reductionCap = 0.0;
-  double perStaticLoopTrip = 0.0;
-  double loopCap = 0.0;
-  double controlFlow = 0.0;
-  double rank1IndirectVectorReduction = 0.0;
-  double tinyDot = 0.0;
   int64_t tinyDotFlopsMax = 0;
-};
-
-struct MixedSetupFallbackProfile {
-  int64_t numWarps = 0;
-  double emptySimtSetupCycles = 0.0;
 };
 
 struct StageResourceProfile {
@@ -111,7 +93,6 @@ struct CandidateProfile {
   std::string microbenchmarkProfileTarget;
   std::string microbenchmarkContentSha256;
 
-  double programIssueScale = 1.0;
   StructuralProfile structural;
   int64_t simdVectorWidthBits = 2048;
   double simdSetupCycles = 0.0;
@@ -146,8 +127,6 @@ struct CandidateProfile {
   double scopeSimdUbStoreBytesPerCycle = 0.0;
   double scopeSimtUbLoadBytesPerThreadPerCycle = 0.0;
   double scopeSimtUbStoreBytesPerThreadPerCycle = 0.0;
-  std::vector<MixedSetupFallbackProfile> mixedSetupFallbacks;
-  std::string mixedSetupFallbackConfidence = "none";
 };
 
 /// Small fail-fast facade around llvm::json.  It permits a readable profile
@@ -745,7 +724,6 @@ loadCandidateProfile(llvm::StringRef requestedPath) {
       microbenchmarkProfile ? &*microbenchmarkProfile : nullptr;
 
   profile.profileVersion = reader.string(*root, "profile_version", "profile");
-  const bool usesAnchorPartitionProfile = true;
   profile.target = reader.string(*root, "target", "profile");
   if (microbench && llvm::StringRef(profile.target) != microbench->getTarget())
     reader.setError("selection profile target '" + profile.target +
@@ -764,38 +742,9 @@ loadCandidateProfile(llvm::StringRef requestedPath) {
   const auto *calibration =
       reader.object(*root, "selection_calibration", "profile");
   if (calibration) {
-    profile.programIssueScale = reader.number(
-        *calibration, "program_issue_scale", "profile.selection_calibration");
-
     if (const auto *structural =
             reader.object(*calibration, "simd_structural_penalty_ratio",
                           "profile.selection_calibration")) {
-      profile.structural.irregularPerDensity =
-          reader.number(*structural, "irregular_per_density", "structural");
-      profile.structural.irregularCap =
-          reader.number(*structural, "irregular_cap", "structural");
-      profile.structural.tinyDotIrregularPerDensity = reader.number(
-          *structural, "tiny_dot_irregular_per_density", "structural");
-      profile.structural.tinyDotIrregularCap =
-          reader.number(*structural, "tiny_dot_irregular_cap", "structural");
-      profile.structural.perMaskRank =
-          reader.number(*structural, "per_mask_rank", "structural");
-      profile.structural.maskCap =
-          reader.number(*structural, "mask_cap", "structural");
-      profile.structural.perWeightedReduction =
-          reader.number(*structural, "per_weighted_reduction", "structural");
-      profile.structural.reductionCap =
-          reader.number(*structural, "reduction_cap", "structural");
-      profile.structural.perStaticLoopTrip =
-          reader.number(*structural, "per_static_loop_trip", "structural");
-      profile.structural.loopCap =
-          reader.number(*structural, "loop_cap", "structural");
-      profile.structural.controlFlow =
-          reader.number(*structural, "control_flow", "structural");
-      profile.structural.rank1IndirectVectorReduction = reader.number(
-          *structural, "rank1_indirect_vector_reduction", "structural");
-      profile.structural.tinyDot =
-          reader.number(*structural, "tiny_dot", "structural");
       profile.structural.tinyDotFlopsMax =
           reader.integer(*structural, "tiny_dot_flops_max", "structural");
     }
@@ -1017,31 +966,6 @@ loadCandidateProfile(llvm::StringRef requestedPath) {
             "simt.stage_resources.scope_handoff");
       }
     }
-    const llvm::json::Object *mixedSetupFallback = nullptr;
-    if (usesAnchorPartitionProfile)
-      mixedSetupFallback = reader.object(*simt, "mixed_setup_fallback", "simt");
-    else
-      mixedSetupFallback = reader.object(*simt, "transition", "simt");
-    if (mixedSetupFallback) {
-      for (int64_t numWarps : {1, 2, 4, 8, 16, 32}) {
-        std::string key = std::to_string(numWarps);
-        const auto *entry = mixedSetupFallback->getObject(key);
-        if (!entry)
-          continue;
-        std::string measuredConfidence;
-        profile.mixedSetupFallbacks.push_back(
-            {numWarps,
-             resolveNumberOrMeasurement(
-                 *entry, "empty_simt_setup_system_cycles", "measurement",
-                 "system_cycle", microbench, reader,
-                 "simt.mixed_setup_fallback." + key, &measuredConfidence)});
-        if (profile.mixedSetupFallbackConfidence == "none")
-          profile.mixedSetupFallbackConfidence = measuredConfidence;
-      }
-      profile.mixedSetupFallbackConfidence =
-          reader.optionalString(*mixedSetupFallback, "confidence",
-                                profile.mixedSetupFallbackConfidence);
-    }
   }
 
   if (reader.failed())
@@ -1078,12 +1002,10 @@ loadCandidateProfile(llvm::StringRef requestedPath) {
       profile.scopeSimtUbLoadBytesPerThreadPerCycle <= 0.0 ||
       profile.scopeSimtUbStoreBytesPerThreadPerCycle <= 0.0 ||
       !profile.simdStageResources.isValid() ||
-      !profile.simtStageResources.isValid() ||
-      profile.mixedSetupFallbacks.empty())
+      !profile.simtStageResources.isValid())
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "SIMD/SIMT profile contains non-positive rates or no mixed setup "
-        "fallbacks");
+        "SIMD/SIMT profile contains invalid StageModel rates");
   std::string canonicalProfile;
   llvm::raw_string_ostream canonicalStream(canonicalProfile);
   emitPythonCanonicalJSON(*parsed, canonicalStream);
@@ -1108,55 +1030,6 @@ loadCandidateProfile(llvm::StringRef requestedPath) {
         llvm::toHex(llvm::ArrayRef<uint8_t>(combinedHash), true);
   }
   return profile;
-}
-
-static int64_t mapValue(const llvm::StringMap<int64_t> &values,
-                        llvm::StringRef key, int64_t fallback = 0) {
-  auto iterator = values.find(key);
-  return iterator == values.end() ? fallback : iterator->second;
-}
-
-static std::vector<std::pair<llvm::StringRef, int64_t>>
-getProfileOpElements(const SimdSimtFeatureSummary &features) {
-  const int64_t maxNumel = std::max<int64_t>(1, features.maxTensorNumel);
-  auto work = [&](llvm::StringRef elementName, int64_t rawCount) {
-    auto iterator = features.opElements.find(elementName);
-    if (iterator != features.opElements.end())
-      return std::max<int64_t>(0, iterator->second);
-    return std::max<int64_t>(0, rawCount) * maxNumel;
-  };
-  return {
-      {"f32.add", work("add", features.addOps)},
-      {"f32.sub", work("sub", features.subOps)},
-      {"f32.mul", work("mul", features.mulOps)},
-      {"f32.div", work("div", features.divOps)},
-      {"f32.max", work("max", features.maxOps)},
-      {"f32.abs", work("abs", features.absOps)},
-      {"f32.exp", work("exp", features.expOps)},
-      {"f32.log", work("log", features.logOps)},
-      {"predicate.cmp", work("cmp", features.cmpOps)},
-      {"predicate.select", work("select", features.selectOps)},
-      {"convert.cast", work("cast", features.castOps)},
-      {"f32.clamp", work("clamp", features.clampOps)},
-  };
-}
-
-static std::vector<std::pair<llvm::StringRef, int64_t>>
-getProfileOpElements(const SimtAnchorFeatureSummary &features) {
-  auto work = [&](llvm::StringRef elementName) {
-    auto iterator = features.opElements.find(elementName);
-    return iterator == features.opElements.end()
-               ? int64_t{0}
-               : std::max<int64_t>(0, iterator->second);
-  };
-  return {
-      {"f32.add", work("add")},       {"f32.sub", work("sub")},
-      {"f32.mul", work("mul")},       {"f32.div", work("div")},
-      {"f32.max", work("max")},       {"f32.abs", work("abs")},
-      {"f32.exp", work("exp")},       {"f32.log", work("log")},
-      {"predicate.cmp", work("cmp")}, {"predicate.select", work("select")},
-      {"convert.cast", work("cast")}, {"f32.clamp", work("clamp")},
-  };
 }
 
 static HardwareProfile
@@ -1245,11 +1118,11 @@ buildStageHardwareProfile(const CandidateProfile &profile, unsigned numWarps) {
   return hardware;
 }
 
-static llvm::Expected<std::optional<StageCostModelSummary>> evaluateStageModel(
+static llvm::Expected<StageCostModelSummary> evaluateStageModel(
     const SimdSimtFeatureSummary &features, const CandidateProfile &profile,
     unsigned numWarps, bool wholeKernelSuperblockMaterializable,
-    bool scopeSuperblockMaterializable, ModuleOp module = nullptr,
-    const SimtAnchorPlan *anchorPlan = nullptr) {
+    bool scopeSuperblockMaterializable, ModuleOp module,
+    const SimtAnchorPlan &anchorPlan) {
   (void)scopeSuperblockMaterializable;
   int64_t maximumSuperblockFactor =
       (wholeKernelSuperblockMaterializable || features.autoBlockifyV1Applied)
@@ -1267,8 +1140,9 @@ static llvm::Expected<std::optional<StageCostModelSummary>> evaluateStageModel(
          maximumSuperblockFactor * static_cast<int64_t>(numWarps) >
              launchWarpLimit)
     maximumSuperblockFactor /= 2;
-  if (!module || !anchorPlan)
-    return std::optional<StageCostModelSummary>{};
+  if (!module)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "StageModel requires a non-null ModuleOp");
 
   HardwareProfile hardwareProfile =
       buildStageHardwareProfile(profile, numWarps);
@@ -1279,7 +1153,7 @@ static llvm::Expected<std::optional<StageCostModelSummary>> evaluateStageModel(
   StageDiscoveryOptions discoveryOptions;
   discoveryOptions.tinyDotFlopsMax = profile.structural.tinyDotFlopsMax;
   discoveryOptions.maximumSuperblockFactor = maximumSuperblockFactor;
-  auto graph = StageDiscovery().discover(module, *anchorPlan, discoveryOptions);
+  auto graph = StageDiscovery().discover(module, anchorPlan, discoveryOptions);
   if (!graph)
     return graph.takeError();
   auto costTable = StageCostEvaluator().evaluate(*graph, **snapshot);
@@ -1288,7 +1162,7 @@ static llvm::Expected<std::optional<StageCostModelSummary>> evaluateStageModel(
   auto routes = solveStageRoutes(*costTable, (*snapshot)->transition);
   if (!routes)
     return routes.takeError();
-  return std::optional<StageCostModelSummary>{std::move(*routes)};
+  return std::move(*routes);
 }
 
 static SimtApplicabilityResult
@@ -1658,96 +1532,6 @@ llvm::json::Object SimtApplicabilityResult::toJSON() const {
   return result;
 }
 
-llvm::json::Object
-SimdSimtCostBreakdown::toJSON(const SimdSimtFeatureSummary &features) const {
-  llvm::json::Object result;
-  llvm::json::Object compute;
-  compute["simd"] = simdComputeCycles;
-  compute["simt"] = simtComputeCycles;
-  compute["simd_dot"] = simdDotCycles;
-  compute["simt_dot"] = simtDotCycles;
-  result["compute_only"] = std::move(compute);
-
-  llvm::json::Object memory;
-  memory["load_bytes"] = features.loadBytes;
-  memory["store_bytes"] = features.storeBytes;
-  memory["simd_load_system_cycles"] = simdLoadCycles;
-  memory["simd_store_system_cycles"] = simdStoreCycles;
-  memory["simd_roofline_system_cycles"] = simdMemoryCycles;
-  memory["simt_load_warp_instructions"] = features.loadWarpInstructions;
-  memory["simt_store_warp_instructions"] = features.storeWarpInstructions;
-  memory["simt_load_system_cycles"] = simtLoadCycles;
-  memory["simt_store_system_cycles"] = simtStoreCycles;
-  memory["simt_serial_memory_system_cycles"] = simtMemoryCycles;
-  // Compatibility field retained for existing report consumers. SIMT memory
-  // is not roofline-overlapped with SIMT compute by the route model.
-  memory["simt_roofline_system_cycles"] = simtMemoryCycles;
-  result["memory"] = std::move(memory);
-
-  llvm::json::Object structure;
-  structure["irregular_density"] = irregularDensity;
-  structure["tiny_dot_underfill"] = tinyDotUnderfill;
-  structure["components"] = ::toJSON(structuralComponents);
-  structure["penalty_ratio"] = structuralPenaltyRatio;
-  structure["simd_structural_penalty_system_cycles"] =
-      simdStructuralPenaltyCycles;
-  result["structure"] = std::move(structure);
-
-  llvm::json::Object mixed;
-  mixed["derived_simd_fraction"] = mixedSimdFraction;
-  mixed["cost_source"] = mixedCostSource;
-  mixed["setup_fallback_num_warps"] = mixedSetupFallbackNumWarps;
-  mixed["mixed_setup_fallback_system_cycles"] = mixedSetupFallbackCycles;
-  mixed["standalone_serialized_setup_system_cycles"] =
-      standaloneSimtSetupCycles;
-  mixed["setup_proxy_delta_system_cycles"] = setupProxyDeltaCycles;
-  mixed["directional_transition_system_cycles"] = nullptr;
-  mixed["directional_transition_measurement_status"] = "unmeasured";
-  llvm::json::Object partition;
-  partition["simd_regular_compute_system_cycles"] =
-      mixedSimdRegularComputeCycles;
-  partition["simd_regular_dot_system_cycles"] = mixedSimdRegularDotCycles;
-  partition["simd_regular_memory_system_cycles"] = mixedSimdRegularMemoryCycles;
-  partition["simd_regular_payload_system_cycles"] =
-      mixedSimdRegularPayloadCycles;
-  partition["simt_anchor_compute_system_cycles"] = mixedSimtAnchorComputeCycles;
-  partition["simt_anchor_dot_system_cycles"] = mixedSimtAnchorDotCycles;
-  partition["simt_anchor_memory_system_cycles"] = mixedSimtAnchorMemoryCycles;
-  partition["simt_anchor_shuffle_system_cycles"] = mixedSimtAnchorShuffleCycles;
-  partition["simt_anchor_predicate_system_cycles"] =
-      mixedSimtAnchorPredicateCycles;
-  partition["simt_anchor_payload_system_cycles"] = mixedSimtAnchorPayloadCycles;
-  partition["simt_anchor_calibrated_payload_system_cycles"] =
-      mixedSimtAnchorCalibratedPayloadCycles;
-  partition["cube_tail_dot_ops"] = cubeTailDotOps;
-  partition["cube_tail_dot_flops"] = cubeTailDotFlops;
-  partition["measured_boundary_system_cycles"] = nullptr;
-  partition["applied_boundary_fallback_system_cycles"] = mixedBoundaryCycles;
-  partition["remaining_simd_structural_penalty_ratio"] =
-      mixedRemainingStructuralPenaltyRatio;
-  mixed["partition"] = std::move(partition);
-  result["mixed"] = std::move(mixed);
-
-  llvm::json::Object execution;
-  execution["shuffle_warp_instructions"] = simtShuffleInstructions;
-  execution["shuffle_system_cycles"] = simtShuffleCycles;
-  execution["predicate_warp_instructions"] = simtPredicateInstructions;
-  execution["predicate_system_cycles"] = simtPredicateCycles;
-  execution["program_issue_scale"] = programIssueScale;
-  execution["simd_setup_system_cycles"] = simdSetupCycles;
-  execution["simt_setup_system_cycles"] = simtSetupCycles;
-  execution["simd_issue_payload_system_cycles"] = simdIssuePayloadCycles;
-  execution["simt_issue_payload_system_cycles"] = simtIssuePayloadCycles;
-  execution["simt_issue_aggregation"] = "serial_sum";
-  result["simt_execution"] = std::move(execution);
-
-  llvm::json::Object opBreakdown;
-  opBreakdown["simd_ops_system_cycles"] = ::toJSON(simdOpSystemCycles);
-  opBreakdown["simt_ops_system_cycles"] = ::toJSON(simtOpSystemCycles);
-  result["op_breakdown"] = std::move(opBreakdown);
-  return result;
-}
-
 llvm::json::Object SimdSimtCostReport::toJSON() const {
   llvm::json::Object result;
   result["schema_version"] = schemaVersion;
@@ -1794,14 +1578,6 @@ llvm::json::Object SimdSimtCostReport::toJSON() const {
       mixedCandidateLegal ? "selectable_candidate" : "inapplicable";
   result["candidate_roles"] = std::move(roles);
 
-  llvm::json::Object analytical;
-  analytical[kAllSimd] = breakdown.simdAnalyticalCycles;
-  analytical[kAllSimtOnly] = breakdown.simtAnalyticalCycles;
-  result["analytical_candidate_costs"] = std::move(analytical);
-
-  llvm::json::Object detail = breakdown.toJSON(features);
-  for (auto &entry : detail)
-    result[entry.first] = std::move(entry.second);
   if (includeFeaturesInJSON)
     result["features"] = features.toJSON();
   return result;
@@ -2397,10 +2173,10 @@ mlir::ascend::analyzeSimdSimtFeatures(ModuleOp module,
 }
 
 static llvm::Expected<SimdSimtCostReport>
-estimateSimdSimtCandidatesImpl(const SimdSimtFeatureSummary &features,
-                               const SimdSimtCostModelOptions &options,
-                               ModuleOp module,
-                               const SimtAnchorPlan *anchorPlan) {
+estimateStageCandidatesImpl(const SimdSimtFeatureSummary &features,
+                            const SimdSimtCostModelOptions &options,
+                            ModuleOp module,
+                            const SimtAnchorPlan &anchorPlan) {
   auto profileOrError = loadCandidateProfile(options.profilePath);
   if (!profileOrError)
     return profileOrError.takeError();
@@ -2421,30 +2197,7 @@ estimateSimdSimtCandidatesImpl(const SimdSimtFeatureSummary &features,
   report.features = features;
   report.applicability =
       evaluateSimtApplicability(features, options.compileOn91095);
-  report.allSimdCandidateLegal =
-      features.simtAnchors.kernelLowerability.allSimd ==
-      CandidateLoweringStatus::Native;
-  const CandidateLoweringStatus allSimtStatus =
-      features.simtAnchors.kernelLowerability.allSimtOnly;
-  // BackendConditional means the anchor itself has no TTIR legality blocker;
-  // the 910/95 pure-SIMT backend is the remaining condition.  Once that
-  // backend is selected, let the complete Stage model decide the route.
-  report.allSimtOnlyCandidateLegal =
-      options.compileOn91095 && !features.hasExplicitScope &&
-      (allSimtStatus == CandidateLoweringStatus::Native ||
-       allSimtStatus == CandidateLoweringStatus::BackendConditional);
-  report.mixedCandidateLegal = !features.hasExplicitScope &&
-                               report.applicability.materializable &&
-                               features.simtAnchors.kernelLowerability.mixed ==
-                                   CandidateLoweringStatus::Native;
   report.includeFeaturesInJSON = options.includeFeaturesInJSON;
-
-  const int64_t weightedReductions =
-      mapValue(features.weightedOps, "reduce", features.reduceOps);
-  const int64_t dotFlops = features.dotFlops;
-  const int64_t pointerOps = std::max<int64_t>(1, features.pointerTensorOps);
-  report.breakdown.irregularDensity = std::min(
-      1.0, static_cast<double>(features.laneDependentPointerOps) / pointerOps);
 
   const int64_t numWarps =
       std::max<int64_t>(1, static_cast<int64_t>(options.numWarps));
@@ -2454,425 +2207,26 @@ estimateSimdSimtCandidatesImpl(const SimdSimtFeatureSummary &features,
       options.scopeSuperblockMaterializable, module, anchorPlan);
   if (!stageModel)
     return stageModel.takeError();
-  if (*stageModel) {
-    report.stageModel = std::move(**stageModel);
-    if (report.stageModel.boundarySource == "stage_boundary_graph" &&
-        report.stageModel.mixed.legal) {
-      report.applicability.mechanismDetected = true;
-      report.applicability.materializable = options.compileOn91095;
-      appendUnique(report.applicability.mechanisms, "generic_stage_seed");
-      if (options.compileOn91095)
-        report.applicability.reasons.clear();
-      report.mixedCandidateLegal =
-          options.compileOn91095 && !features.hasExplicitScope;
-    }
-    report.candidateCosts.allSimd = report.stageModel.allSimd.totalCycles;
-    report.candidateCosts.allSimtOnly = report.stageModel.allSimt.totalCycles;
-    report.candidateCosts.mixedSimdSimt = report.stageModel.mixed.totalCycles;
-    report.allSimdCandidateLegal &= report.stageModel.allSimd.legal;
-    report.allSimtOnlyCandidateLegal &= report.stageModel.allSimt.legal;
-    report.mixedCandidateLegal &= report.stageModel.mixed.legal;
-    report.breakdown.mixedCostSource = "stage_cost_evaluator_route_sum";
-    const unsigned legalCandidateCount =
-        static_cast<unsigned>(report.allSimdCandidateLegal) +
-        static_cast<unsigned>(report.allSimtOnlyCandidateLegal) +
-        static_cast<unsigned>(report.mixedCandidateLegal);
-    if (legalCandidateCount == 0)
-      return llvm::createStringError(
-          std::errc::not_supported,
-          "Stage Route Model found no materializable candidate");
-    report.decision = chooseBest(
-        report.candidateCosts, report.allSimdCandidateLegal,
-        report.allSimtOnlyCandidateLegal, report.mixedCandidateLegal);
-    report.bestScore = report.candidateCosts.get(report.decision);
-    const double denominator = std::max(1.0e-9, report.bestScore);
-    report.candidateRatiosToBest = {
-        report.candidateCosts.allSimd / denominator,
-        report.candidateCosts.allSimtOnly / denominator,
-        report.candidateCosts.mixedSimdSimt / denominator};
-    return report;
+  report.stageModel = std::move(*stageModel);
+
+  report.allSimdCandidateLegal = report.stageModel.allSimd.legal;
+  report.allSimtOnlyCandidateLegal =
+      options.compileOn91095 && !features.hasExplicitScope &&
+      report.stageModel.allSimt.legal;
+  report.mixedCandidateLegal =
+      options.compileOn91095 && !features.hasExplicitScope &&
+      report.stageModel.mixed.legal;
+  if (report.stageModel.mixed.legal) {
+    report.applicability.mechanismDetected = true;
+    report.applicability.materializable = options.compileOn91095;
+    appendUnique(report.applicability.mechanisms, "generic_stage_seed");
+    if (options.compileOn91095)
+      report.applicability.reasons.clear();
   }
 
-  const int64_t maxNumel = std::max<int64_t>(1, features.maxTensorNumel);
-  const int64_t elementBits =
-      features.maxElementBits > 0
-          ? std::max<int64_t>(8, features.maxElementBits)
-          : 32;
-  const int64_t vectorWidth =
-      std::max<int64_t>(1, profile.simdVectorWidthBits / elementBits);
-
-  llvm::StringMap<int64_t> rawCountByKind;
-  rawCountByKind["gather"] = features.gatherOps;
-  rawCountByKind["histogram"] = features.histogramOps;
-  rawCountByKind["atomic"] = features.atomicOps;
-  for (llvm::StringRef kind : {"gather", "histogram", "atomic"}) {
-    int64_t coreWork = mapValue(features.opElements, kind,
-                                mapValue(rawCountByKind, kind) * maxNumel);
-    if (coreWork > 0)
-      report.unsupported.push_back((kind + "_core_cost_uncalibrated").str());
-  }
-
-  int64_t classifiedScalarOps =
-      features.addOps + features.subOps + features.mulOps + features.divOps +
-      features.maxOps + features.absOps + features.expOps + features.logOps +
-      features.cmpOps + features.selectOps + features.castOps +
-      features.clampOps;
-  int64_t unclassifiedScalarOps =
-      std::max<int64_t>(0, features.scalarOps - classifiedScalarOps);
-  if (unclassifiedScalarOps)
-    report.unsupported.push_back(std::to_string(unclassifiedScalarOps) +
-                                 " unclassified arithmetic ops");
-
-  for (const auto &[opName, elements] : getProfileOpElements(features)) {
-    if (elements <= 0)
-      continue;
-    auto simdIterator = profile.simdOps.find(opName);
-    auto simtIterator = profile.simtOps.find(opName);
-    if (simdIterator == profile.simdOps.end() ||
-        simtIterator == profile.simtOps.end()) {
-      report.unsupported.push_back(opName.str());
-      continue;
-    }
-    const OpProfile &simd = simdIterator->second;
-    const OpProfile &simt = simtIterator->second;
-    if (simd.throughput <= 0.0 || simt.throughput <= 0.0) {
-      report.unsupported.push_back(opName.str());
-      continue;
-    }
-    double simdCycles = std::ceil(static_cast<double>(elements) / vectorWidth) /
-                        simd.throughput * simd.factor;
-    double simtCycles =
-        static_cast<double>(elements) / simt.throughput * simt.factor;
-    report.breakdown.simdOpSystemCycles[opName] = simdCycles;
-    report.breakdown.simtOpSystemCycles[opName] = simtCycles;
-    report.breakdown.simdComputeCycles += simdCycles;
-    report.breakdown.simtComputeCycles += simtCycles;
-  }
-
-  for (const auto &[opName, elements] :
-       getProfileOpElements(features.simtAnchors)) {
-    if (elements <= 0)
-      continue;
-    auto simdIterator = profile.simdOps.find(opName);
-    auto simtIterator = profile.simtOps.find(opName);
-    if (simdIterator == profile.simdOps.end() ||
-        simtIterator == profile.simtOps.end())
-      continue;
-    const OpProfile &simd = simdIterator->second;
-    const OpProfile &simt = simtIterator->second;
-    if (simd.throughput <= 0.0 || simt.throughput <= 0.0)
-      continue;
-    report.breakdown.mixedSimdRegularComputeCycles -=
-        std::ceil(static_cast<double>(elements) / vectorWidth) /
-        simd.throughput * simd.factor;
-    report.breakdown.mixedSimtAnchorComputeCycles +=
-        static_cast<double>(elements) / simt.throughput * simt.factor;
-  }
-  report.breakdown.mixedSimdRegularComputeCycles +=
-      report.breakdown.simdComputeCycles;
-  report.breakdown.mixedSimdRegularComputeCycles =
-      std::max(0.0, report.breakdown.mixedSimdRegularComputeCycles);
-
-  report.breakdown.simdLoadCycles =
-      features.loadBytes / profile.simdMte2BytesPerCycle;
-  report.breakdown.simdStoreCycles =
-      features.storeBytes / profile.simdMte3BytesPerCycle;
-  report.breakdown.simdMemoryCycles = std::max(
-      report.breakdown.simdLoadCycles, report.breakdown.simdStoreCycles);
-  const double mixedSimdRegularLoadCycles =
-      std::max(0.0, features.loadBytes - features.simtAnchors.loadBytes) /
-      profile.simdMte2BytesPerCycle;
-  const double mixedSimdRegularStoreCycles =
-      std::max(0.0, features.storeBytes - features.simtAnchors.storeBytes) /
-      profile.simdMte3BytesPerCycle;
-  report.breakdown.mixedSimdRegularMemoryCycles =
-      std::max(mixedSimdRegularLoadCycles, mixedSimdRegularStoreCycles);
-
-  const int64_t loadWarpInstructions =
-      features.loadWarpInstructions != 0
-          ? features.loadWarpInstructions
-          : features.loadOps *
-                static_cast<int64_t>(std::ceil(static_cast<double>(maxNumel) /
-                                               profile.simtWarpSize));
-  const int64_t storeWarpInstructions =
-      features.storeWarpInstructions != 0
-          ? features.storeWarpInstructions
-          : features.storeOps *
-                static_cast<int64_t>(std::ceil(static_cast<double>(maxNumel) /
-                                               profile.simtWarpSize));
-  report.features.loadWarpInstructions = loadWarpInstructions;
-  report.features.storeWarpInstructions = storeWarpInstructions;
-  report.breakdown.simtLoadCycles =
-      loadWarpInstructions / profile.simtLoadWarpRate;
-  report.breakdown.simtStoreCycles =
-      storeWarpInstructions / profile.simtStoreWarpRate;
-  report.breakdown.simtMemoryCycles =
-      report.breakdown.simtLoadCycles + report.breakdown.simtStoreCycles;
-  report.breakdown.mixedSimtAnchorMemoryCycles =
-      features.simtAnchors.loadWarpInstructions / profile.simtLoadWarpRate +
-      features.simtAnchors.storeWarpInstructions / profile.simtStoreWarpRate;
-
-  const int64_t weightedScans =
-      mapValue(features.weightedOps, "scan", features.scanOps);
-  if (weightedScans)
-    report.unsupported.push_back("scan_template_ranking_uncalibrated");
-  const int64_t shuffleLevels = static_cast<int64_t>(
-      std::ceil(std::log2(static_cast<double>(profile.simtWarpSize))));
-  report.breakdown.simtShuffleInstructions =
-      features.shuffleLaneSteps > 0
-          ? std::ceil(static_cast<double>(features.shuffleLaneSteps) /
-                      profile.simtWarpSize)
-          : static_cast<double>(weightedReductions + weightedScans) *
-                std::ceil(static_cast<double>(maxNumel) /
-                          profile.simtWarpSize) *
-                shuffleLevels;
-  report.breakdown.simtShuffleCycles =
-      report.breakdown.simtShuffleInstructions / profile.simtShuffleRate;
-  const int64_t anchorWeightedReductions =
-      mapValue(features.simtAnchors.weightedOps, "reduce",
-               features.simtAnchors.reduceOps);
-  const int64_t anchorWeightedScans = mapValue(
-      features.simtAnchors.weightedOps, "scan", features.simtAnchors.scanOps);
-  const int64_t anchorMaxNumel =
-      std::max<int64_t>(1, features.simtAnchors.maxTensorNumel);
-  const double anchorShuffleInstructions =
-      features.simtAnchors.shuffleLaneSteps > 0
-          ? std::ceil(
-                static_cast<double>(features.simtAnchors.shuffleLaneSteps) /
-                profile.simtWarpSize)
-          : static_cast<double>(anchorWeightedReductions +
-                                anchorWeightedScans) *
-                std::ceil(static_cast<double>(anchorMaxNumel) /
-                          profile.simtWarpSize) *
-                shuffleLevels;
-  report.breakdown.mixedSimtAnchorShuffleCycles =
-      anchorShuffleInstructions / profile.simtShuffleRate;
-
-  report.breakdown.simtPredicateInstructions =
-      features.predicateLaneEvaluations > 0
-          ? std::ceil(static_cast<double>(features.predicateLaneEvaluations) /
-                      profile.simtWarpSize)
-          : static_cast<double>(features.maskRankSum) *
-                std::ceil(static_cast<double>(maxNumel) / profile.simtWarpSize);
-  report.breakdown.simtPredicateCycles =
-      report.breakdown.simtPredicateInstructions / profile.simtPredicateRate;
-  const double anchorPredicateInstructions =
-      features.simtAnchors.predicateLaneEvaluations > 0
-          ? std::ceil(static_cast<double>(
-                          features.simtAnchors.predicateLaneEvaluations) /
-                      profile.simtWarpSize)
-          : static_cast<double>(features.simtAnchors.maskRankSum) *
-                std::ceil(static_cast<double>(anchorMaxNumel) /
-                          profile.simtWarpSize);
-  report.breakdown.mixedSimtAnchorPredicateCycles =
-      anchorPredicateInstructions / profile.simtPredicateRate;
-
-  if (dotFlops) {
-    report.breakdown.simdDotCycles =
-        profile.simdDotSetupCycles +
-        static_cast<double>(dotFlops) / profile.simdDotFlopsPerCycle;
-    report.breakdown.simtDotCycles =
-        profile.simtDotSetupCycles +
-        static_cast<double>(dotFlops) / profile.simtDotFlopsPerCycle;
-  }
-  const int64_t regularDotFlops =
-      std::max<int64_t>(0, dotFlops - features.simtAnchors.dotFlops);
-  report.breakdown.cubeTailDotOps =
-      std::max<int64_t>(0, features.dotOps - features.simtAnchors.dotOps);
-  report.breakdown.cubeTailDotFlops = regularDotFlops;
-  if (regularDotFlops)
-    report.breakdown.mixedSimdRegularDotCycles =
-        profile.simdDotSetupCycles +
-        static_cast<double>(regularDotFlops) / profile.simdDotFlopsPerCycle;
-  if (features.simtAnchors.dotFlops)
-    report.breakdown.mixedSimtAnchorDotCycles =
-        profile.simtDotSetupCycles +
-        static_cast<double>(features.simtAnchors.dotFlops) /
-            profile.simtDotFlopsPerCycle;
-
-  report.breakdown.simdSetupCycles = profile.simdSetupCycles;
-  report.breakdown.simtSetupCycles = profile.simtSetupCycles;
-  report.breakdown.simdIssuePayloadCycles = std::max(
-      report.breakdown.simdComputeCycles + report.breakdown.simdDotCycles,
-      report.breakdown.simdMemoryCycles);
-  // The current SIMT lowering emits a dependency-ordered warp instruction
-  // stream. Loads feed compute, compute feeds shuffle/reduction, and stores
-  // consume the result. There is no measured overlap contract that would
-  // justify a roofline max(compute, memory), so charge the serial path.
-  report.breakdown.simtIssuePayloadCycles =
-      report.breakdown.simtComputeCycles + report.breakdown.simtShuffleCycles +
-      report.breakdown.simtDotCycles + report.breakdown.simtMemoryCycles +
-      report.breakdown.simtPredicateCycles;
-  report.breakdown.programIssueScale = profile.programIssueScale;
-  report.breakdown.simdAnalyticalCycles =
-      profile.simdSetupCycles +
-      report.breakdown.simdIssuePayloadCycles * profile.programIssueScale;
-  report.breakdown.simtAnalyticalCycles =
-      profile.simtSetupCycles +
-      report.breakdown.simtIssuePayloadCycles * profile.programIssueScale;
-
-  const bool tinyDot =
-      dotFlops > 0 && dotFlops <= profile.structural.tinyDotFlopsMax;
-  report.breakdown.tinyDotUnderfill =
-      tinyDot ? std::max(0.0, 1.0 - static_cast<double>(dotFlops) /
-                                        profile.structural.tinyDotFlopsMax)
-              : 0.0;
-  const double irregularPerDensity =
-      tinyDot ? profile.structural.tinyDotIrregularPerDensity
-              : profile.structural.irregularPerDensity;
-  const double irregularCap = tinyDot ? profile.structural.tinyDotIrregularCap
-                                      : profile.structural.irregularCap;
-  report.breakdown.structuralComponents["irregular_addressing"] = std::min(
-      irregularCap, report.breakdown.irregularDensity * irregularPerDensity);
-  report.breakdown.structuralComponents["mask_materialization"] =
-      std::min(profile.structural.maskCap,
-               features.maskRankSum * profile.structural.perMaskRank);
-  report.breakdown.structuralComponents["reduction_lowering"] =
-      std::min(profile.structural.reductionCap,
-               weightedReductions * profile.structural.perWeightedReduction);
-  report.breakdown.structuralComponents["static_loop_control"] = std::min(
-      profile.structural.loopCap,
-      features.staticLoopTripCountSum * profile.structural.perStaticLoopTrip);
-  report.breakdown.structuralComponents["control_flow"] =
-      features.hasControlFlow ? profile.structural.controlFlow : 0.0;
-  report.breakdown.structuralComponents["tiny_dot_startup"] =
-      tinyDot ? profile.structural.tinyDot * report.breakdown.tinyDotUnderfill
-              : 0.0;
-  report.breakdown.structuralComponents["rank1_indirect_vector_reduction"] =
-      features.rank1IndirectVectorReduce
-          ? profile.structural.rank1IndirectVectorReduction
-          : 0.0;
-  for (const auto &component : report.breakdown.structuralComponents)
-    report.breakdown.structuralPenaltyRatio += component.second;
-  // Candidate costs must remain independent. Structural terms describe work
-  // omitted by the SIMD roofline, so charge them against A_SIMD itself;
-  // changing SIMT throughput/setup must never change the all-SIMD score.
-  report.breakdown.simdStructuralPenaltyCycles =
-      report.breakdown.simdAnalyticalCycles *
-      report.breakdown.structuralPenaltyRatio;
-  report.candidateCosts.allSimd = report.breakdown.simdAnalyticalCycles +
-                                  report.breakdown.simdStructuralPenaltyCycles;
-  report.candidateCosts.allSimtOnly = report.breakdown.simtAnalyticalCycles;
-  const MixedSetupFallbackProfile *nearestSetupFallback = nullptr;
-  for (const MixedSetupFallbackProfile &fallback : profile.mixedSetupFallbacks)
-    if (!nearestSetupFallback ||
-        std::abs(fallback.numWarps - numWarps) <
-            std::abs(nearestSetupFallback->numWarps - numWarps))
-      nearestSetupFallback = &fallback;
-  if (!nearestSetupFallback)
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "SIMD/SIMT profile has no mixed setup "
-                                   "fallback");
-  report.breakdown.mixedSetupFallbackNumWarps = nearestSetupFallback->numWarps;
-  report.breakdown.standaloneSimtSetupCycles = profile.simtSetupCycles;
-  report.breakdown.mixedSetupFallbackCycles =
-      nearestSetupFallback->emptySimtSetupCycles;
-  report.breakdown.setupProxyDeltaCycles =
-      std::max(0.0, report.breakdown.mixedSetupFallbackCycles -
-                        report.breakdown.standaloneSimtSetupCycles);
-
-  // A mixed route is not a convex blend of two whole-kernel costs. Charge
-  // exact materializable anchors at SIMT rates and remaining operations at
-  // SIMD rates. The regular SIMD phase keeps its measured roofline model;
-  // the SIMT anchor is a serial load/compute/shuffle/store instruction path.
-  report.breakdown.mixedSimdRegularPayloadCycles =
-      std::max(report.breakdown.mixedSimdRegularComputeCycles +
-                   report.breakdown.mixedSimdRegularDotCycles,
-               report.breakdown.mixedSimdRegularMemoryCycles);
-  report.breakdown.mixedSimtAnchorPayloadCycles =
-      report.breakdown.mixedSimtAnchorComputeCycles +
-      report.breakdown.mixedSimtAnchorDotCycles +
-      report.breakdown.mixedSimtAnchorShuffleCycles +
-      report.breakdown.mixedSimtAnchorMemoryCycles +
-      report.breakdown.mixedSimtAnchorPredicateCycles;
-
-  const int64_t remainingPointerOps = std::max<int64_t>(
-      0, features.pointerTensorOps - features.simtAnchors.pointerTensorOps);
-  const int64_t remainingLaneDependentPointerOps =
-      std::max<int64_t>(0, features.laneDependentPointerOps -
-                               features.simtAnchors.laneDependentPointerOps);
-  const double remainingIrregularDensity =
-      remainingPointerOps > 0
-          ? std::min(1.0,
-                     static_cast<double>(remainingLaneDependentPointerOps) /
-                         remainingPointerOps)
-          : 0.0;
-  const int64_t remainingMaskRank = std::max<int64_t>(
-      0, features.maskRankSum - features.simtAnchors.maskRankSum);
-  const int64_t remainingWeightedReductions =
-      std::max<int64_t>(0, weightedReductions - anchorWeightedReductions);
-  const int64_t remainingLoopTrips =
-      std::max<int64_t>(0, features.staticLoopTripCountSum -
-                               features.simtAnchors.staticLoopTripCountSum);
-  const bool remainingControlFlow =
-      features.hasControlFlow && !features.simtAnchors.hasControlFlow;
-  const bool remainingRank1Reduction =
-      features.rank1IndirectVectorReduce && remainingWeightedReductions > 0;
-  const bool remainingTinyDot = regularDotFlops > 0 && tinyDot;
-
-  double remainingStructuralPenalty = 0.0;
-  remainingStructuralPenalty +=
-      std::min(irregularCap, remainingIrregularDensity * irregularPerDensity);
-  remainingStructuralPenalty +=
-      std::min(profile.structural.maskCap,
-               remainingMaskRank * profile.structural.perMaskRank);
-  remainingStructuralPenalty += std::min(
-      profile.structural.reductionCap,
-      remainingWeightedReductions * profile.structural.perWeightedReduction);
-  remainingStructuralPenalty +=
-      std::min(profile.structural.loopCap,
-               remainingLoopTrips * profile.structural.perStaticLoopTrip);
-  if (remainingControlFlow)
-    remainingStructuralPenalty += profile.structural.controlFlow;
-  if (remainingRank1Reduction)
-    remainingStructuralPenalty +=
-        profile.structural.rank1IndirectVectorReduction;
-  if (remainingTinyDot)
-    remainingStructuralPenalty +=
-        profile.structural.tinyDot * report.breakdown.tinyDotUnderfill;
-  report.breakdown.mixedRemainingStructuralPenaltyRatio =
-      remainingStructuralPenalty;
-
-  double totalPartitionWork = features.loadBytes + features.storeBytes +
-                              static_cast<double>(features.dotFlops);
-  for (const auto &entry : features.opElements)
-    totalPartitionWork += std::max<int64_t>(0, entry.second);
-  double anchorPartitionWork =
-      features.simtAnchors.loadBytes + features.simtAnchors.storeBytes +
-      static_cast<double>(features.simtAnchors.dotFlops);
-  for (const auto &entry : features.simtAnchors.opElements)
-    anchorPartitionWork += std::max<int64_t>(0, entry.second);
-  report.breakdown.mixedSimdFraction =
-      totalPartitionWork > 0.0
-          ? std::clamp(1.0 - anchorPartitionWork / totalPartitionWork, 0.0, 1.0)
-          : 0.0;
-
-  if (features.simtAnchors.count > 0) {
-    const double regularPayloadWithResidual =
-        report.breakdown.mixedSimdRegularPayloadCycles *
-        (1.0 + remainingStructuralPenalty);
-    double anchorPayloadForCost = report.breakdown.mixedSimtAnchorPayloadCycles;
-    report.breakdown.mixedSimtAnchorCalibratedPayloadCycles =
-        anchorPayloadForCost;
-    report.breakdown.mixedSimtAnchorCalibratedPayloadCycles =
-        anchorPayloadForCost;
-    report.candidateCosts.mixedSimdSimt =
-        report.breakdown.mixedSetupFallbackCycles +
-        profile.programIssueScale *
-            (regularPayloadWithResidual + anchorPayloadForCost) +
-        report.breakdown.mixedBoundaryCycles;
-    report.breakdown.mixedCostSource =
-        "materializable_anchor_resource_partition";
-  } else {
-    report.candidateCosts.mixedSimdSimt =
-        std::max(report.candidateCosts.allSimd,
-                 report.candidateCosts.allSimtOnly) +
-        report.breakdown.mixedSetupFallbackCycles;
-    report.breakdown.mixedCostSource =
-        "inapplicable_without_materializable_anchor";
-  }
-
-  sortAndUnique(report.unsupported);
+  report.candidateCosts.allSimd = report.stageModel.allSimd.totalCycles;
+  report.candidateCosts.allSimtOnly = report.stageModel.allSimt.totalCycles;
+  report.candidateCosts.mixedSimdSimt = report.stageModel.mixed.totalCycles;
   const unsigned legalCandidateCount =
       static_cast<unsigned>(report.allSimdCandidateLegal) +
       static_cast<unsigned>(report.allSimtOnlyCandidateLegal) +
@@ -2880,23 +2234,17 @@ estimateSimdSimtCandidatesImpl(const SimdSimtFeatureSummary &features,
   if (legalCandidateCount == 0)
     return llvm::createStringError(
         std::errc::not_supported,
-        "SIMD/SIMT route model found no independently lowerable candidate");
+        "StageModel found no materializable route candidate");
   report.decision =
       chooseBest(report.candidateCosts, report.allSimdCandidateLegal,
                  report.allSimtOnlyCandidateLegal, report.mixedCandidateLegal);
   report.bestScore = report.candidateCosts.get(report.decision);
-  const double ratioDenominator = std::max(1.0e-9, report.bestScore);
+  const double denominator = std::max(1.0e-9, report.bestScore);
   report.candidateRatiosToBest = {
-      report.candidateCosts.allSimd / ratioDenominator,
-      report.candidateCosts.allSimtOnly / ratioDenominator,
-      report.candidateCosts.mixedSimdSimt / ratioDenominator};
+      report.candidateCosts.allSimd / denominator,
+      report.candidateCosts.allSimtOnly / denominator,
+      report.candidateCosts.mixedSimdSimt / denominator};
   return report;
-}
-
-llvm::Expected<SimdSimtCostReport> mlir::ascend::estimateSimdSimtCandidates(
-    const SimdSimtFeatureSummary &features,
-    const SimdSimtCostModelOptions &options) {
-  return estimateSimdSimtCandidatesImpl(features, options, nullptr, nullptr);
 }
 
 llvm::Expected<SimdSimtCostReport> mlir::ascend::analyzeSimdSimtCandidates(
@@ -2915,6 +2263,5 @@ llvm::Expected<SimdSimtCostReport> mlir::ascend::analyzeSimdSimtCandidates(
   auto features = analyzeSimdSimtFeatures(module, anchorPlan);
   if (!features)
     return features.takeError();
-  return estimateSimdSimtCandidatesImpl(*features, options, module,
-                                        &anchorPlan);
+  return estimateStageCandidatesImpl(*features, options, module, anchorPlan);
 }
