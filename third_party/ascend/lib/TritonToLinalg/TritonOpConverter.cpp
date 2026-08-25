@@ -22,7 +22,7 @@
  */
 
 #include "ascend/include/TritonToLinalg/TritonOpConverter.h"
-#include "AscendModel/RouteModel/SimtSelection.h"
+#include "AscendModel/StageModel/SimtSelection.h"
 #include "ascend/include/TritonToLinalg/BlockPtrAnalysis.h"
 #include "ascend/include/TritonToLinalg/MaskAnalysis.h"
 #include "ascend/include/TritonToLinalg/TritonToLinalgPass.h"

@@ -1,7 +1,7 @@
-#include "AscendModel/RouteModel/SimdSimtCostModel.h"
-#include "AscendModel/RouteModel/StageAnalysis.h"
-#include "AscendModel/RouteModel/StageCostModels.h"
-#include "AscendModel/RouteModel/StageDiscovery.h"
+#include "AscendModel/StageModel/SimdSimtCostModel.h"
+#include "AscendModel/StageModel/StageAnalysis.h"
+#include "AscendModel/StageModel/StageCostModels.h"
+#include "AscendModel/StageModel/StageDiscovery.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

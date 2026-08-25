@@ -1,7 +1,7 @@
 //===- StageCostModels.cpp - Per-stage analytical models -----------------===//
 
-#include "AscendModel/RouteModel/StageCostModels.h"
-#include "AscendModel/RouteModel/StageDiscovery.h"
+#include "AscendModel/StageModel/StageCostModels.h"
+#include "AscendModel/StageModel/StageDiscovery.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"

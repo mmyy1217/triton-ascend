@@ -1,9 +1,9 @@
 //===- StageAnalysis.h - Operation-derived Stage analysis ------*- C++ -*-===//
 
-#ifndef ASCENDMODEL_ROUTEMODEL_STAGEANALYSIS_H
-#define ASCENDMODEL_ROUTEMODEL_STAGEANALYSIS_H
+#ifndef ASCENDMODEL_STAGEMODEL_STAGEANALYSIS_H
+#define ASCENDMODEL_STAGEMODEL_STAGEANALYSIS_H
 
-#include "AscendModel/RouteModel/StageCostModels.h"
+#include "AscendModel/StageModel/StageCostModels.h"
 
 #include "llvm/Support/Error.h"
 
@@ -28,4 +28,4 @@ public:
 
 } // namespace mlir::ascend
 
-#endif // ASCENDMODEL_ROUTEMODEL_STAGEANALYSIS_H
+#endif // ASCENDMODEL_STAGEMODEL_STAGEANALYSIS_H

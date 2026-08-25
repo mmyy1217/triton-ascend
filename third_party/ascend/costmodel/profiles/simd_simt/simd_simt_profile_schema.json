@@ -1,9 +1,9 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "simd_simt_profile_schema.json",
-  "title": "Ascend SIMD/SIMT Route Model profile",
+  "title": "Ascend SIMD/SIMT StageModel profile",
   "description": "Target-specific hardware resource profile consumed by the online Stage Cost Model. Stage partitions and workloads are derived from transformed TTIR.",
-  "$comment": "Standard JSON has no // comments. Property descriptions in this schema are the canonical field comments for Route Model profiles.",
+  "$comment": "Standard JSON has no // comments. Property descriptions in this schema are the canonical field comments for StageModel profiles.",
   "type": "object",
   "required": [
     "schema_version",
@@ -20,16 +20,16 @@
   "properties": {
     "$schema": {
       "type": "string",
-      "description": "Relative path to this JSON Schema; used by editors and offline validators, not by Route Model scoring."
+      "description": "Relative path to this JSON Schema; used by editors and offline validators, not by StageModel scoring."
     },
     "schema_version": {
       "const": 10,
-      "description": "Machine-readable Stage Route Model hardware-profile layout. Version 10 removes workload-specific Stage templates; workload and Stage structure are always produced online from transformed TTIR."
+      "description": "Machine-readable Stage StageModel hardware-profile layout. Version 10 removes workload-specific Stage templates; workload and Stage structure are always produced online from transformed TTIR."
     },
     "profile_version": {
       "type": "string",
       "minLength": 1,
-      "description": "Version identifier accepted by the C++ Route Model loader and emitted in decision reports."
+      "description": "Version identifier accepted by the C++ StageModel loader and emitted in decision reports."
     },
     "target": {
       "type": "string",
@@ -39,7 +39,7 @@
     "description": {
       "type": "string",
       "minLength": 1,
-      "description": "Human-readable ownership boundary and purpose of this Route Model profile."
+      "description": "Human-readable ownership boundary and purpose of this StageModel profile."
     },
     "microbenchmark_profile": {
       "type": "string",
@@ -660,12 +660,12 @@
         "mte2": {
           "type": "number",
           "minimum": 0,
-          "description": "Legacy MTE2 startup prior in SYS_CNT cycles; currently not consumed by Route Model scoring."
+          "description": "Legacy MTE2 startup prior in SYS_CNT cycles; currently not consumed by StageModel scoring."
         },
         "mte3": {
           "type": "number",
           "minimum": 0,
-          "description": "Legacy MTE3 startup prior in SYS_CNT cycles; currently not consumed by Route Model scoring."
+          "description": "Legacy MTE3 startup prior in SYS_CNT cycles; currently not consumed by StageModel scoring."
         },
         "source": {
           "type": "string",
@@ -679,7 +679,7 @@
             "medium",
             "high"
           ],
-          "description": "Documentary confidence of the legacy startup priors; the current Route Model loader does not consume it."
+          "description": "Documentary confidence of the legacy startup priors; the current StageModel loader does not consume it."
         },
         "note": {
           "type": "string",
@@ -708,7 +708,7 @@
         "hbm_bytes_per_system_cycle": {
           "type": "number",
           "exclusiveMinimum": 0,
-          "description": "Legacy whole-device HBM-rate seed in byte/SYS_CNT-cycle; currently not consumed by Route Model scoring."
+          "description": "Legacy whole-device HBM-rate seed in byte/SYS_CNT-cycle; currently not consumed by StageModel scoring."
         },
         "vector_mte2_bytes_per_system_cycle": {
           "type": "number",
@@ -736,7 +736,7 @@
         },
         "note": {
           "type": "string",
-          "description": "Warning that these are fallback Route Model inputs rather than shared isolated measurements."
+          "description": "Warning that these are fallback StageModel inputs rather than shared isolated measurements."
         }
       },
       "additionalProperties": false
@@ -1087,7 +1087,7 @@
             "medium",
             "high"
           ],
-          "description": "Required Route Model confidence for using these standalone empty-VF probes as mixed setup fallbacks."
+          "description": "Required StageModel confidence for using these standalone empty-VF probes as mixed setup fallbacks."
         },
         "note": {
           "type": "string",

@@ -20,7 +20,7 @@
  * THE SOFTWARE.
  */
 
-#include "AscendModel/RouteModel/SimtSelection.h"
+#include "AscendModel/StageModel/SimtSelection.h"
 #include "TritonToUnstructure/IndirectAtomicUtils.h"
 #include "Utils/Utils.h"
 #include "ascend/include/DiscreteMaskAccessConversion/Passes.h"

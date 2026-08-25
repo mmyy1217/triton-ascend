@@ -1,8 +1,8 @@
 #include "AscendModel/Transforms/Passes.h"
 #include "AscendModel/IR/AscendModelDialect.h"
-#include "AscendModel/RouteModel/SimdSimtCostModel.h"
-#include "AscendModel/RouteModel/SimtAnchorAnalysis.h"
-#include "AscendModel/RouteModel/SimtSelection.h"
+#include "AscendModel/StageModel/SimdSimtCostModel.h"
+#include "AscendModel/StageModel/SimtAnchorAnalysis.h"
+#include "AscendModel/StageModel/SimtSelection.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

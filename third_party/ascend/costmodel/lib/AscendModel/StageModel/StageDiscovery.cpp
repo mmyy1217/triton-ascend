@@ -1,8 +1,8 @@
 //===- StageDiscovery.cpp - Generic Stage boundary discovery ------------===//
 
-#include "AscendModel/RouteModel/StageDiscovery.h"
+#include "AscendModel/StageModel/StageDiscovery.h"
 
-#include "AscendModel/RouteModel/StageAnalysis.h"
+#include "AscendModel/StageModel/StageAnalysis.h"
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"

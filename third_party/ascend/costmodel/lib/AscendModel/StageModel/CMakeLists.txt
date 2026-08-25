@@ -4,7 +4,7 @@ add_compile_definitions(
   TRITON_ASCEND_SIMD_SIMT_PROFILE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../../profiles/simd_simt/david_v100_simd_simt_v1.json"
 )
 
-add_mlir_library(AscendModelRouteModel
+add_mlir_library(AscendModelStageModel
   SimtAnchorAnalysis.cpp
   StageAnalysis.cpp
   StageDiscovery.cpp
@@ -15,7 +15,7 @@ add_mlir_library(AscendModelRouteModel
   Transforms/MaterializeSimtScopes.cpp
 
   ADDITIONAL_HEADER_DIRS
-  ${TRITON_ASCEND_COSTMODEL_SOURCE_DIR}/include/AscendModel/RouteModel
+  ${TRITON_ASCEND_COSTMODEL_SOURCE_DIR}/include/AscendModel/StageModel
 
   DEPENDS
   AscendModelOpsIncGen

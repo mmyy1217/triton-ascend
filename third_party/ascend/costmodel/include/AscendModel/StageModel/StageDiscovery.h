@@ -1,10 +1,10 @@
 //===- StageDiscovery.h - Generic Stage boundary discovery ------*- C++ -*-===//
 
-#ifndef ASCENDMODEL_ROUTEMODEL_STAGEDISCOVERY_H
-#define ASCENDMODEL_ROUTEMODEL_STAGEDISCOVERY_H
+#ifndef ASCENDMODEL_STAGEMODEL_STAGEDISCOVERY_H
+#define ASCENDMODEL_STAGEMODEL_STAGEDISCOVERY_H
 
-#include "AscendModel/RouteModel/SimtAnchorAnalysis.h"
-#include "AscendModel/RouteModel/StageCostModels.h"
+#include "AscendModel/StageModel/SimtAnchorAnalysis.h"
+#include "AscendModel/StageModel/StageCostModels.h"
 
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/Support/Error.h"
@@ -120,4 +120,4 @@ LogicalResult materializeSimtStagePlan(ModuleOp module,
 
 } // namespace mlir::ascend
 
-#endif // ASCENDMODEL_ROUTEMODEL_STAGEDISCOVERY_H
+#endif // ASCENDMODEL_STAGEMODEL_STAGEDISCOVERY_H

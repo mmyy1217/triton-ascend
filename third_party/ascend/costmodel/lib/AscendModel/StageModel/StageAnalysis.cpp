@@ -1,8 +1,8 @@
 //===- StageAnalysis.cpp - Operation-derived Stage analysis -------------===//
 
-#include "AscendModel/RouteModel/StageAnalysis.h"
+#include "AscendModel/StageModel/StageAnalysis.h"
 
-#include "AscendModel/RouteModel/SimtAnchorAnalysis.h"
+#include "AscendModel/StageModel/SimtAnchorAnalysis.h"
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/DenseSet.h"

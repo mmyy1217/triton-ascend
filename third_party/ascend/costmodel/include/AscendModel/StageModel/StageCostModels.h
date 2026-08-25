@@ -6,10 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ASCENDMODEL_ROUTEMODEL_STAGECOSTMODELS_H
-#define ASCENDMODEL_ROUTEMODEL_STAGECOSTMODELS_H
+#ifndef ASCENDMODEL_STAGEMODEL_STAGECOSTMODELS_H
+#define ASCENDMODEL_STAGEMODEL_STAGECOSTMODELS_H
 
-#include "AscendModel/RouteModel/StageRouteCostModel.h"
+#include "AscendModel/StageModel/StageRouteCostModel.h"
 
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/StringMap.h"
@@ -217,4 +217,4 @@ private:
 
 } // namespace mlir::ascend
 
-#endif // ASCENDMODEL_ROUTEMODEL_STAGECOSTMODELS_H
+#endif // ASCENDMODEL_STAGEMODEL_STAGECOSTMODELS_H

@@ -179,7 +179,7 @@ def _apply_cpp_simd_simt_decision(metadata, effective: str, superblock_factor: i
     metadata["auto_simt_superblock_factor"] = superblock_factor
     metadata["auto_simt_effective_kind"] = effective
     if effective == "all_simd":
-        # ``simd_simt`` is the user's request to run the Route Model, not the
+        # ``simd_simt`` is the user's request to run the StageModel, not the
         # backend mode after selection.  Keeping it here makes later compiler
         # stages add mixed-runtime flags even though no SIMT scope exists.
         metadata["compile_mode"] = "simd"
@@ -221,7 +221,7 @@ def _run_cpp_simd_simt_costmodel(mod, metadata, opt) -> str:
         bool(opt.compile_on_910_95),
         whole_kernel_superblock_materializable,
         # Whole-kernel AutoBlockify V1 cannot materialize a SuperBlock for a
-        # local mixed scope.  Claiming otherwise lets the Route Model select
+        # local mixed scope.  Claiming otherwise lets the StageModel select
         # F2/F4 even though the executable still runs the scope as F1.  A
         # future ScopeSuperBlock pass must flip this only after it can batch
         # the SIMD producer, local SIMT scope and SIMD consumer together.
@@ -405,7 +405,7 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         compile_on_910_95 = metadata["compile_on_910_95"]
         requested_force_simt_template = metadata["force_simt_template"]
         compile_mode = _validate_compile_mode(metadata.get("compile_mode", "simd"))
-        # Once the C++ Route Model has made an explicit decision, lowering
+        # Once the C++ StageModel has made an explicit decision, lowering
         # must implement that decision rather than also applying the legacy
         # global SIMT-template switch. A mixed decision is represented solely
         # by the materialized scope.scope<vector_mode=simt>; an all-SIMD
@@ -515,7 +515,7 @@ def linalg_to_bc_by_triton_mlir_opt(linalg: str, metadata, opt):
     Returns:
         Bytecode data as bytes (not file path, to avoid temp directory cleanup issues)
     """
-    # The Stage graph is fixed before the C++ Route Model runs.  When auto
+    # The Stage graph is fixed before the C++ StageModel runs.  When auto
     # selects all-SIMT, ttadapter deliberately carries TTIR forward to the
     # pure-SIMT compiler; the optional Linalg bytecode round-trip must become
     # an identity stage rather than trying to parse TTIR as Linalg/BishengIR.
@@ -1610,7 +1610,7 @@ def ttir_to_npubin(mod, metadata, opt):
             else:
                 metadata["auto_blockify_v1_runtime_cap"] = auto_blockify_v1_enabled
             _export_coalesce_metadata(mod, metadata)
-            # This analysis marker is useful to the Route Model, but it is not
+            # This analysis marker is useful to the StageModel, but it is not
             # part of the public TTIR contract consumed by bishengir-compile.
             _get_then_remove_rc(mod, "ta.ttir_layout_merge.applied")
         elif not metadata.get("scope_pure_simt_auto", False):

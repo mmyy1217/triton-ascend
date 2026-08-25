@@ -5,11 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ASCENDMODEL_ROUTEMODEL_SIMDSIMTCOSTMODEL_H
-#define ASCENDMODEL_ROUTEMODEL_SIMDSIMTCOSTMODEL_H
+#ifndef ASCENDMODEL_STAGEMODEL_SIMDSIMTCOSTMODEL_H
+#define ASCENDMODEL_STAGEMODEL_SIMDSIMTCOSTMODEL_H
 
-#include "AscendModel/RouteModel/SimtAnchorAnalysis.h"
-#include "AscendModel/RouteModel/StageRouteCostModel.h"
+#include "AscendModel/StageModel/SimtAnchorAnalysis.h"
+#include "AscendModel/StageModel/StageRouteCostModel.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Error.h"
@@ -241,7 +241,7 @@ struct SimdSimtCandidateScores {
 
 struct SimdSimtCostModelOptions {
   /// Empty selects TRITON_ASCEND_SIMD_SIMT_PROFILE, then the source-tree
-  /// profile compiled into AscendModelRouteModel.
+  /// profile compiled into AscendModelStageModel.
   std::string profilePath;
   std::string actualTarget;
   unsigned numWarps = 32;
@@ -320,4 +320,4 @@ analyzeSimdSimtCandidates(mlir::ModuleOp module,
 } // namespace ascend
 } // namespace mlir
 
-#endif // ASCENDMODEL_ROUTEMODEL_SIMDSIMTCOSTMODEL_H
+#endif // ASCENDMODEL_STAGEMODEL_SIMDSIMTCOSTMODEL_H

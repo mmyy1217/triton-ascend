@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ASCENDMODEL_ROUTEMODEL_STAGEROUTECOSTMODEL_H
-#define ASCENDMODEL_ROUTEMODEL_STAGEROUTECOSTMODEL_H
+#ifndef ASCENDMODEL_STAGEMODEL_STAGEROUTECOSTMODEL_H
+#define ASCENDMODEL_STAGEMODEL_STAGEROUTECOSTMODEL_H
 
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/StringMap.h"
@@ -231,4 +231,4 @@ solveStageRoutes(const StageCostTable &costTable,
 
 } // namespace mlir::ascend
 
-#endif // ASCENDMODEL_ROUTEMODEL_STAGEROUTECOSTMODEL_H
+#endif // ASCENDMODEL_STAGEMODEL_STAGEROUTECOSTMODEL_H

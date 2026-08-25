@@ -30,7 +30,7 @@ set_property(DIRECTORY PROPERTY RULE_LAUNCH_LINK ${_saved_launch_link})
 
 include_directories(${ASCENDNPU_IR_SRC_DIR}/bishengir/include)
 include_directories(${ASCENDNPU_IR_BINARY_DIR}/bishengir/include) # Tablegen'd files
-# RouteModel exposes a small header-only execution-selection contract used by
+# StageModel exposes a small header-only execution-selection contract used by
 # backend lowerings. Make CostModel public headers visible before those targets
 # are created by add_subdirectory(lib).
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/costmodel/include)

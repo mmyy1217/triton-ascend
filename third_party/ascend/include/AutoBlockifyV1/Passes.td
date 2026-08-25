@@ -33,7 +33,7 @@ def TARefineSIMTAutoBlockifyV1SuperBlock
            "mlir::triton::FuncOp"> {
   let summary = "Refine an existing factor-1 V1 loop into a pure-SIMT SuperBlock loop";
   let description = [{
-    Route Model intentionally observes the route-neutral factor-1 V1 loop.
+    StageModel intentionally observes the route-neutral factor-1 V1 loop.
     After it selects a pure-SIMT route, this pass refines that existing loop to
     the selected power-of-two SuperBlock factor.  It never recreates V1 and it
     does not touch AutoBlockify V2.

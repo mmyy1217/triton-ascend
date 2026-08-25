@@ -3,7 +3,7 @@
   "schema_version": 10,
   "profile_version": "david-v100-simd-simt-20260820-v17",
   "target": "Ascend950PR/dav-c310",
-  "description": "Stage Route Model hardware profile. Stage partitions and workloads are generated online from transformed TTIR; this file contains no workload-specific Stage template or route multiplier.",
+  "description": "Stage StageModel hardware profile. Stage partitions and workloads are generated online from transformed TTIR; this file contains no workload-specific Stage template or route multiplier.",
   "microbenchmark_profile": "../microbench/ascend_davidv100_v1.json",
   "compatible_targets": [
     "Ascend950*",
@@ -37,7 +37,7 @@
     "description": "Inputs used to estimate the all-SIMD candidate: SIMD width, setup, operation, memory, and dot costs.",
     "vector_width_measurement": "simd.vector_width_bits",
     "startup_system_cycles": {
-      "description": "Legacy SIMD pipeline startup priors in SYS_CNT cycles. Only vector is currently consumed by Route Model scoring.",
+      "description": "Legacy SIMD pipeline startup priors in SYS_CNT cycles. Only vector is currently consumed by StageModel scoring.",
       "vector": 21.212121,
       "mte2": 30.303030,
       "mte3": 24.242424,
@@ -239,7 +239,7 @@
       "confidence": "low"
     },
     "camodel_effective": {
-      "description": "Workload-effective CaModel issue rates retained as fallback calibration context. The current Route Model consumes only the predicate rate from the nested rate map.",
+      "description": "Workload-effective CaModel issue rates retained as fallback calibration context. The current StageModel consumes only the predicate rate from the nested rate map.",
       "scope": "FBGEMM scope_b8; 13 active veccores",
       "simulator_clock_mhz": 1650.0,
       "conversion": "ops_per_system_cycle = aggregate_ops_per_simulator_cycle * simulator_clock_mhz / SYS_CNT_mhz",

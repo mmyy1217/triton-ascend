@@ -1,6 +1,6 @@
 //===- StageRouteCostModel.cpp - Logical-stage route solver ---------------===//
 
-#include "AscendModel/RouteModel/StageRouteCostModel.h"
+#include "AscendModel/StageModel/StageRouteCostModel.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"

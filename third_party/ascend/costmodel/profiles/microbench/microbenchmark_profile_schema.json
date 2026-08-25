@@ -109,7 +109,7 @@
             "medium",
             "low"
           ],
-          "description": "Evidence confidence. This is consumed by Route Model admission and is not a documentation-only comment."
+          "description": "Evidence confidence. This is consumed by StageModel admission and is not a documentation-only comment."
         }
       },
       "additionalProperties": false
