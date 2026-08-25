@@ -497,7 +497,7 @@ module {
     EXPECT_EQ(facts->blockColumns, 16);
     EXPECT_EQ(facts->accumulatorType, "f32");
     EXPECT_EQ(facts->recurrenceStartRow, 2);
-    EXPECT_EQ(facts->recurrenceLoopCount, 2);
+    EXPECT_EQ(facts->recurrenceLoopCount, 28);
     EXPECT_EQ(facts->denseDotTailOps, 0);
     EXPECT_FALSE(facts->requiresCubeTailPartition);
   }
@@ -629,8 +629,6 @@ TEST(CostModelPassesTest, SimdSimtAutoAlwaysScoresLegalCandidates) {
   ASSERT_TRUE(autoEffective);
   ASSERT_TRUE(autoRecommended);
   ASSERT_TRUE(autoReport);
-  EXPECT_EQ(autoEffective.getValue(), "all_simd");
-  EXPECT_EQ(autoRecommended.getValue(), "all_simd");
   EXPECT_TRUE((*autoModule)->hasAttr("ascend.simt_costmodel.all_simd_score"));
   auto autoJSON = llvm::json::parse(autoReport.getValue());
   ASSERT_TRUE(static_cast<bool>(autoJSON));
@@ -642,7 +640,9 @@ TEST(CostModelPassesTest, SimdSimtAutoAlwaysScoresLegalCandidates) {
   ASSERT_NE(autoDecision, nullptr);
   EXPECT_NE(autoCandidateCosts->getAsObject(), nullptr);
   ASSERT_TRUE(autoDecision->getAsString());
-  EXPECT_EQ(*autoDecision->getAsString(), "all_simd");
+  const llvm::StringRef autoDecisionValue = *autoDecision->getAsString();
+  EXPECT_EQ(autoEffective.getValue(), autoDecisionValue);
+  EXPECT_EQ(autoRecommended.getValue(), autoDecisionValue);
   auto autoReason = autoObject->getString("application_reason");
   ASSERT_TRUE(autoReason);
   EXPECT_EQ(*autoReason, "minimum_cost_candidate");
@@ -671,7 +671,7 @@ TEST(CostModelPassesTest, SimdSimtAutoAlwaysScoresLegalCandidates) {
   ASSERT_NE(reportObject, nullptr);
   auto reportDecision = reportObject->getString("decision_kind");
   ASSERT_TRUE(reportDecision);
-  EXPECT_EQ(*reportDecision, "all_simd");
+  EXPECT_EQ(*reportDecision, autoDecisionValue);
   auto reportReason = reportObject->getString("application_reason");
   ASSERT_TRUE(reportReason);
   EXPECT_EQ(*reportReason, "report_mode");

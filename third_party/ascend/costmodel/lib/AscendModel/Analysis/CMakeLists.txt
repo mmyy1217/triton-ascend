@@ -1,5 +1,11 @@
 if(TRITONSIM_HAS_BISHENGIR_HIVM)
   add_compile_definitions(TRITONSIM_HAS_BISHENGIR_HIVM=1)
+  if(LLVM_MAJOR_VERSION_22_COMPATIBLE)
+    add_compile_definitions(__LLVM_MAJOR_VERSION_21_COMPATIBLE__
+                            __LLVM_MAJOR_VERSION_22_COMPATIBLE__)
+  elseif(LLVM_MAJOR_VERSION_21_COMPATIBLE)
+    add_compile_definitions(__LLVM_MAJOR_VERSION_21_COMPATIBLE__)
+  endif()
   include_directories(SYSTEM ${TRITONSIM_BISHENGIR_INCLUDE_DIRS})
 endif()
 
@@ -37,6 +43,16 @@ add_mlir_library(AscendModelAnalysis
 )
 
 if(TRITONSIM_HAS_BISHENGIR_HIVM)
+  if(LLVM_MAJOR_VERSION_22_COMPATIBLE)
+    target_compile_definitions(AscendModelAnalysis PUBLIC
+      __LLVM_MAJOR_VERSION_21_COMPATIBLE__
+      __LLVM_MAJOR_VERSION_22_COMPATIBLE__
+    )
+  elseif(LLVM_MAJOR_VERSION_21_COMPATIBLE)
+    target_compile_definitions(AscendModelAnalysis PUBLIC
+      __LLVM_MAJOR_VERSION_21_COMPATIBLE__
+    )
+  endif()
   target_include_directories(AscendModelAnalysis SYSTEM PUBLIC
     ${TRITONSIM_BISHENGIR_INCLUDE_DIRS}
   )
