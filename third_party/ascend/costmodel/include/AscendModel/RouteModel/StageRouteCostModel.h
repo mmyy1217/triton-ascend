@@ -9,11 +9,13 @@
 #ifndef ASCENDMODEL_ROUTEMODEL_STAGEROUTECOSTMODEL_H
 #define ASCENDMODEL_ROUTEMODEL_STAGEROUTECOSTMODEL_H
 
+#include "mlir/IR/Operation.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/JSON.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -155,6 +157,9 @@ struct LogicalStageCost {
   bool localSimtMaterializable = false;
   std::vector<int64_t> localSimtFactors;
   std::vector<StageImplementationCost> implementations;
+  int64_t beginBoundary = -1;
+  int64_t endBoundary = -1;
+  std::vector<Operation *> operations;
 
   llvm::json::Object toJSON() const;
 };
@@ -175,6 +180,8 @@ struct StageCostTable {
   std::string profileVersion;
   std::vector<LogicalPhaseCost> phases;
   std::vector<LogicalStageCost> stages;
+  int64_t boundaryCount = 0;
+  std::string discoveryJSON;
 
   llvm::json::Object toJSON() const;
 };
@@ -201,6 +208,7 @@ struct StageRoutePlan {
   StageKernelRouteKind candidate = StageKernelRouteKind::AllSIMD;
   bool legal = false;
   std::vector<StageImplementation> implementations;
+  std::vector<size_t> stageIndices;
   std::vector<double> entryTransitionCycles;
   std::vector<double> logicalStageCycles;
   std::vector<double> logicalPhaseCycles;
@@ -220,6 +228,8 @@ struct StageCostModelSummary {
   std::string profileVersion;
   std::vector<LogicalPhaseCost> phases;
   std::vector<LogicalStageCost> stages;
+  int64_t boundaryCount = 0;
+  std::string discoveryJSON;
   StageTransitionCost transition;
   StageRoutePlan allSimd;
   StageRoutePlan allSimt;

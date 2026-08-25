@@ -1,10 +1,12 @@
 #include "AscendModel/RouteModel/SimdSimtCostModel.h"
 #include "AscendModel/RouteModel/StageCostModels.h"
+#include "AscendModel/RouteModel/StageDiscovery.h"
 #include "AscendModel/RouteModel/StagePartitioner.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include <gtest/gtest.h>
@@ -21,6 +23,8 @@ using mlir::ascend::StageCostEvaluator;
 using mlir::ascend::StageCostModelKind;
 using mlir::ascend::StageCostModelRegistry;
 using mlir::ascend::StageCostTable;
+using mlir::ascend::StageDiscovery;
+using mlir::ascend::StageDiscoveryOptions;
 using mlir::ascend::StageFeatureAnalysis;
 using mlir::ascend::StageMode;
 using mlir::ascend::StageModeLegalityAnalysis;
@@ -564,6 +568,53 @@ TEST(SimdSimtCostModelTest, KernelMixedRouteComesFromAdjacentStageModes) {
   EXPECT_EQ(result->mixed.implementations[2].mode, StageMode::SIMD);
 }
 
+TEST(SimdSimtCostModelTest, BoundaryGraphRouteChoosesPartitionAndModeTogether) {
+  StageCostTable table;
+  table.domain = "boundary_graph_test";
+  table.boundarySource = "stage_boundary_graph";
+  table.profileVersion = "unit_test";
+  table.boundaryCount = 3;
+  auto makeCost = [&](StageMode mode, double cycles) {
+    mlir::ascend::StageImplementationCost cost;
+    cost.implementation = {mode, 1};
+    cost.totalCycles = cycles;
+    cost.modelName = "unit_test";
+    cost.profileVersion = table.profileVersion;
+    cost.source = "unit_test";
+    return cost;
+  };
+  auto makeStage = [&](llvm::StringRef id, int64_t begin, int64_t end,
+                       double simd, double simt) {
+    mlir::ascend::LogicalStageCost stage;
+    stage.id = id.str();
+    stage.description = stage.id;
+    stage.beginBoundary = begin;
+    stage.endBoundary = end;
+    stage.localSimtMaterializable = end - begin < 2;
+    stage.localSimtFactors = stage.localSimtMaterializable
+                                 ? std::vector<int64_t>{1}
+                                 : std::vector<int64_t>{};
+    stage.implementations = {makeCost(StageMode::SIMD, simd),
+                             makeCost(StageMode::SIMT, simt)};
+    return stage;
+  };
+  table.stages = {
+      makeStage("whole", 0, 2, 100.0, 100.0),
+      makeStage("scalar_prefix", 0, 1, 50.0, 5.0),
+      makeStage("copy_loop", 1, 2, 5.0, 50.0),
+  };
+
+  auto result = solveStageRoutes(table, StageTransitionCost{});
+  if (!result)
+    FAIL() << llvm::toString(result.takeError());
+  ASSERT_TRUE(result->mixed.legal);
+  EXPECT_EQ(result->mixed.stageIndices, std::vector<size_t>({1, 2}));
+  ASSERT_EQ(result->mixed.implementations.size(), 2u);
+  EXPECT_EQ(result->mixed.implementations[0].mode, StageMode::SIMT);
+  EXPECT_EQ(result->mixed.implementations[1].mode, StageMode::SIMD);
+  EXPECT_DOUBLE_EQ(result->mixed.totalCycles, 10.0);
+}
+
 TEST(SimdSimtCostModelTest, MixedScopePaysExactBidirectionalUbHandoffCost) {
   StageCostTable table;
   table.domain = "scope_handoff";
@@ -1086,6 +1137,147 @@ TEST(SimdSimtCostModelTest,
 }
 
 TEST(SimdSimtCostModelTest,
+     GenericStageDiscoveryFindsPaddedCopyBoundaryCandidates) {
+  mlir::MLIRContext context;
+  context.getOrLoadDialect<mlir::arith::ArithDialect>();
+  context.getOrLoadDialect<mlir::func::FuncDialect>();
+  context.getOrLoadDialect<mlir::scf::SCFDialect>();
+  context.allowUnregisteredDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    module {
+      func.func @padded_copy(%indices: i64, %input: i64, %output: i64) {
+        %index = "tt.load"(%indices) : (i64) -> i32
+        %c0 = arith.constant 0 : i32
+        %condition = arith.cmpi sgt, %index, %c0 : i32
+        %offset = scf.if %condition -> (i64) {
+          %extended = arith.extsi %index : i32 to i64
+          scf.yield %extended : i64
+        } else {
+          %zero = arith.constant 0 : i64
+          scf.yield %zero : i64
+        }
+        %offsets = "tt.make_range"() : () -> tensor<8xi64>
+        %input_ptrs = "tt.addptr"(%input, %offsets) :
+            (i64, tensor<8xi64>) -> tensor<8xi64>
+        %values = "tt.load"(%input_ptrs) :
+            (tensor<8xi64>) -> tensor<8xf32>
+        %scale = arith.constant dense<2.0> : tensor<8xf32>
+        %scaled = arith.mulf %values, %scale : tensor<8xf32>
+        %output_ptrs = "tt.addptr"(%output, %offsets) :
+            (i64, tensor<8xi64>) -> tensor<8xi64>
+        "tt.store"(%output_ptrs, %scaled) :
+            (tensor<8xi64>, tensor<8xf32>) -> ()
+        return
+      }
+    }
+  )mlir",
+                                                        &context);
+  ASSERT_TRUE(module);
+
+  mlir::ascend::SimtAnchorPlan anchorPlan;
+  StageDiscoveryOptions options;
+  options.maximumSuperblockFactor = 4;
+  auto graph = StageDiscovery().discover(*module, anchorPlan, options);
+  if (!graph)
+    FAIL() << llvm::toString(graph.takeError());
+  ASSERT_GT(graph->dependenceGraph.units.size(), 2u);
+  EXPECT_EQ(graph->boundaryCount(), graph->dependenceGraph.units.size() + 1);
+  EXPECT_FALSE(graph->dependenceGraph.edges.empty());
+
+  size_t copyBegin = graph->dependenceGraph.units.size();
+  for (const auto &unit : graph->dependenceGraph.units)
+    if (unit.operation->getName().getStringRef() == "tt.make_range")
+      copyBegin = unit.index;
+  ASSERT_LT(copyBegin, graph->dependenceGraph.units.size());
+
+  const mlir::ascend::CandidateStage *prefix = nullptr;
+  const mlir::ascend::CandidateStage *copy = nullptr;
+  const mlir::ascend::CandidateStage *whole = nullptr;
+  for (const auto &candidate : graph->candidates) {
+    if (candidate.beginBoundary == 0 &&
+        candidate.endBoundary == graph->dependenceGraph.units.size())
+      whole = &candidate;
+    if (candidate.beginBoundary == 0 && candidate.endBoundary == copyBegin)
+      prefix = &candidate;
+    if (candidate.beginBoundary == copyBegin &&
+        candidate.endBoundary == graph->dependenceGraph.units.size())
+      copy = &candidate;
+  }
+  ASSERT_NE(prefix, nullptr);
+  ASSERT_NE(copy, nullptr);
+  ASSERT_NE(whole, nullptr);
+  EXPECT_EQ(prefix->stage.costModelKind, StageCostModelKind::ScalarControl);
+  EXPECT_EQ(copy->stage.costModelKind,
+            StageCostModelKind::ContinuousTileMemory);
+  EXPECT_TRUE(prefix->stage.localSimtMaterializable);
+  EXPECT_TRUE(copy->stage.localSimtMaterializable);
+  EXPECT_EQ(whole->stage.legalSimtFactors, std::vector<int64_t>({1, 2, 4}));
+}
+
+TEST(SimdSimtCostModelTest,
+     StageMaterializationMergesAdjacentSimtStagesAndThreadsResults) {
+  mlir::MLIRContext context;
+  context.getOrLoadDialect<mlir::arith::ArithDialect>();
+  context.getOrLoadDialect<mlir::func::FuncDialect>();
+  context.allowUnregisteredDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    module {
+      func.func @kernel() -> i32 {
+        %c1 = arith.constant 1 : i32
+        %c2 = arith.constant 2 : i32
+        %sum = arith.addi %c1, %c2 : i32
+        %product = arith.muli %sum, %c2 : i32
+        return %product : i32
+      }
+    }
+  )mlir",
+                                                        &context);
+  ASSERT_TRUE(module);
+  auto function = module->lookupSymbol<mlir::func::FuncOp>("kernel");
+  ASSERT_TRUE(function);
+  llvm::SmallVector<mlir::Operation *> roots;
+  for (mlir::Operation &operation : function.getBody().front())
+    if (!operation.hasTrait<mlir::OpTrait::IsTerminator>())
+      roots.push_back(&operation);
+  ASSERT_EQ(roots.size(), 4u);
+
+  mlir::ascend::StageCostModelSummary summary;
+  summary.mixed.legal = true;
+  summary.mixed.implementations = {
+      {StageMode::SIMD, 1}, {StageMode::SIMT, 1}, {StageMode::SIMT, 1}};
+  summary.mixed.stageIndices = {0, 1, 2};
+  mlir::ascend::LogicalStageCost simd;
+  simd.beginBoundary = 0;
+  simd.endBoundary = 2;
+  simd.operations = {roots[0], roots[1]};
+  mlir::ascend::LogicalStageCost firstSimt;
+  firstSimt.beginBoundary = 2;
+  firstSimt.endBoundary = 3;
+  firstSimt.operations = {roots[2]};
+  firstSimt.localSimtMaterializable = true;
+  mlir::ascend::LogicalStageCost secondSimt;
+  secondSimt.beginBoundary = 3;
+  secondSimt.endBoundary = 4;
+  secondSimt.operations = {roots[3]};
+  secondSimt.localSimtMaterializable = true;
+  summary.stages = {simd, firstSimt, secondSimt};
+
+  auto plan = mlir::ascend::buildStageMaterializationPlan(summary);
+  if (!plan)
+    FAIL() << llvm::toString(plan.takeError());
+  ASSERT_EQ(plan->ranges.size(), 1u);
+  EXPECT_EQ(plan->ranges.front().operations.size(), 2u);
+  EXPECT_TRUE(
+      mlir::succeeded(mlir::ascend::materializeSimtStagePlan(*module, *plan)));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  int64_t scopes = 0;
+  module->walk([&](mlir::Operation *operation) {
+    scopes += operation->getName().getStringRef() == "scope.scope";
+  });
+  EXPECT_EQ(scopes, 1);
+}
+
+TEST(SimdSimtCostModelTest,
      CompoundScopeOrderIsNormalizedBeforePhasePartitioning) {
   mlir::MLIRContext context;
   context.getOrLoadDialect<mlir::arith::ArithDialect>();
@@ -1222,6 +1414,66 @@ TEST(SimdSimtCostModelTest, PointerInductionLoopIsNotADataRecurrence) {
   EXPECT_FALSE(classified.features.hasLoopCarriedDataDependency);
   EXPECT_EQ(classified.costModelKind,
             StageCostModelKind::IndependentPipelinedLoop);
+}
+
+TEST(SimdSimtCostModelTest, ScalarSelectedRowCopyLoopRemainsContiguous) {
+  mlir::MLIRContext context;
+  context.getOrLoadDialect<mlir::arith::ArithDialect>();
+  context.getOrLoadDialect<mlir::func::FuncDialect>();
+  context.getOrLoadDialect<mlir::scf::SCFDialect>();
+  context.allowUnregisteredDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    module {
+      func.func @kernel(%row_ptr: i64, %input: i64) {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c4 = arith.constant 4 : index
+        %step = arith.constant dense<8> : tensor<8xi32>
+        %row = "tt.load"(%row_ptr) : (i64) -> i32
+        %row_i64 = arith.extsi %row : i32 to i64
+        %row_base = "tt.addptr"(%input, %row_i64) : (i64, i64) -> i64
+        %base = "tt.splat"(%row_base) : (i64) -> tensor<8xi64>
+        %initial = "tt.make_range"() : () -> tensor<8xi32>
+        %offsets = scf.for %i = %c0 to %c4 step %c1
+            iter_args(%current = %initial) -> tensor<8xi32> {
+          %ptrs = "tt.addptr"(%base, %current) :
+              (tensor<8xi64>, tensor<8xi32>) -> tensor<8xi64>
+          %values = "tt.load"(%ptrs) : (tensor<8xi64>) -> tensor<8xf32>
+          %next = arith.addi %current, %step : tensor<8xi32>
+          scf.yield %next : tensor<8xi32>
+        }
+        return
+      }
+    }
+  )mlir",
+                                                        &context);
+  ASSERT_TRUE(module);
+
+  mlir::ascend::SimtAnchorPlan anchorPlan;
+  StageDiscoveryOptions options;
+  options.maximumSuperblockFactor = 4;
+  auto graph = StageDiscovery().discover(*module, anchorPlan, options);
+  if (!graph)
+    FAIL() << llvm::toString(graph.takeError());
+
+  size_t copyBegin = graph->dependenceGraph.units.size();
+  for (const auto &unit : graph->dependenceGraph.units)
+    if (unit.operation->getName().getStringRef() == "tt.make_range")
+      copyBegin = unit.index;
+  ASSERT_LT(copyBegin, graph->dependenceGraph.units.size());
+
+  const mlir::ascend::CandidateStage *copy = nullptr;
+  for (const auto &candidate : graph->candidates)
+    if (candidate.beginBoundary == copyBegin &&
+        candidate.endBoundary == graph->dependenceGraph.units.size())
+      copy = &candidate;
+  ASSERT_NE(copy, nullptr);
+  EXPECT_EQ(copy->stage.costModelKind,
+            StageCostModelKind::ContinuousTileMemory);
+  EXPECT_TRUE(copy->stage.features.hasPointerInduction);
+  EXPECT_FALSE(copy->stage.features.hasLoopCarriedDataDependency);
+  EXPECT_FALSE(copy->stage.features.hasIndirectMemory);
+  EXPECT_TRUE(copy->stage.features.hasContiguousMemory);
 }
 
 TEST(SimdSimtCostModelTest, IncompatibleDominantStructuresRequireStageSplit) {

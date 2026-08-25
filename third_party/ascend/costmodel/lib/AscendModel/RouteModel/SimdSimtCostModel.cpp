@@ -10,6 +10,7 @@
 #include "AscendModel/Profile/MicrobenchmarkProfile.h"
 #include "AscendModel/RouteModel/SimtAnchorAnalysis.h"
 #include "AscendModel/RouteModel/StageCostModels.h"
+#include "AscendModel/RouteModel/StageDiscovery.h"
 #include "AscendModel/RouteModel/StagePartitioner.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
@@ -1256,6 +1257,19 @@ static llvm::Expected<std::optional<StageCostModelSummary>> evaluateStageModel(
       (wholeKernelSuperblockMaterializable || features.autoBlockifyV1Applied)
           ? 4
           : 1;
+  int64_t launchWarpLimit = 64;
+  if (module) {
+    module.walk([&](Operation *operation) {
+      llvm::StringRef name = operation->getName().getStringRef();
+      if (name.contains("barrier") || name.contains("sync"))
+        launchWarpLimit = 32;
+    });
+  }
+  while (partitionerOptions.maximumSuperblockFactor > 1 &&
+         partitionerOptions.maximumSuperblockFactor *
+                 static_cast<int64_t>(numWarps) >
+             launchWarpLimit)
+    partitionerOptions.maximumSuperblockFactor /= 2;
   partitionerOptions.scopeSuperblockMaterializable =
       scopeSuperblockMaterializable;
   StagePartitioner partitioner;
@@ -1267,8 +1281,6 @@ static llvm::Expected<std::optional<StageCostModelSummary>> evaluateStageModel(
           : partitioner.partition(features, partitionerOptions);
   if (!partition)
     return partition.takeError();
-  if (!*partition)
-    return std::optional<StageCostModelSummary>{};
 
   HardwareProfile hardwareProfile =
       buildStageHardwareProfile(profile, numWarps);
@@ -1277,6 +1289,26 @@ static llvm::Expected<std::optional<StageCostModelSummary>> evaluateStageModel(
   if (!snapshot)
     return snapshot.takeError();
   StageCostEvaluator evaluator;
+  if (!*partition) {
+    if (!module || !anchorPlan)
+      return std::optional<StageCostModelSummary>{};
+    StageDiscoveryOptions discoveryOptions;
+    discoveryOptions.tinyDotFlopsMax = profile.structural.tinyDotFlopsMax;
+    discoveryOptions.maximumSuperblockFactor =
+        partitionerOptions.maximumSuperblockFactor;
+    auto graph =
+        StageDiscovery().discover(module, *anchorPlan, discoveryOptions);
+    if (!graph)
+      return graph.takeError();
+    auto graphCostTable = evaluator.evaluate(*graph, **snapshot);
+    if (!graphCostTable)
+      return graphCostTable.takeError();
+    auto graphRoutes =
+        solveStageRoutes(*graphCostTable, (*snapshot)->transition);
+    if (!graphRoutes)
+      return graphRoutes.takeError();
+    return std::optional<StageCostModelSummary>{std::move(*graphRoutes)};
+  }
   auto costTable = evaluator.evaluate(**partition, **snapshot);
   if (!costTable)
     return costTable.takeError();
@@ -2451,6 +2483,16 @@ estimateSimdSimtCandidatesImpl(const SimdSimtFeatureSummary &features,
     return stageModel.takeError();
   if (*stageModel) {
     report.stageModel = std::move(**stageModel);
+    if (report.stageModel.boundarySource == "stage_boundary_graph" &&
+        report.stageModel.mixed.legal) {
+      report.applicability.mechanismDetected = true;
+      report.applicability.materializable = options.compileOn91095;
+      appendUnique(report.applicability.mechanisms, "generic_stage_seed");
+      if (options.compileOn91095)
+        report.applicability.reasons.clear();
+      report.mixedCandidateLegal =
+          options.compileOn91095 && !features.hasExplicitScope;
+    }
     report.candidateCosts.allSimd = report.stageModel.allSimd.totalCycles;
     report.candidateCosts.allSimtOnly = report.stageModel.allSimt.totalCycles;
     report.candidateCosts.mixedSimdSimt = report.stageModel.mixed.totalCycles;

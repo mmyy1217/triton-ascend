@@ -24,6 +24,8 @@
 
 namespace mlir::ascend {
 
+struct StageBoundaryGraph;
+
 enum class StageCostModelKind {
   AutoBlockifyDispatch,
   AutoBlockifyLoop,
@@ -227,6 +229,9 @@ public:
       : registry(registry) {}
 
   llvm::Expected<StageCostTable> evaluate(const StagePartition &partition,
+                                          const HardwareProfile &profile) const;
+
+  llvm::Expected<StageCostTable> evaluate(const StageBoundaryGraph &graph,
                                           const HardwareProfile &profile) const;
 
 private:

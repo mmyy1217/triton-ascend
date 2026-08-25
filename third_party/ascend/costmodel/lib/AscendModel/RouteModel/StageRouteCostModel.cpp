@@ -17,7 +17,12 @@ using namespace mlir::ascend;
 
 namespace {
 
-enum class RouteClass : unsigned { AllSIMD = 0, AllSIMT = 1, Mixed = 2 };
+enum class RouteClass : unsigned {
+  AllSIMD = 0,
+  AllSIMT = 1,
+  Mixed = 2,
+  AllSIMTForMixed = 3
+};
 
 struct PartialRoute {
   double totalCycles = 0.0;
@@ -29,6 +34,7 @@ struct PartialRoute {
   RouteClass routeClass = RouteClass::AllSIMD;
   bool allSimtStagesLocal = true;
   std::vector<StageImplementation> implementations;
+  std::vector<size_t> stageIndices;
   std::vector<double> entryTransitionCycles;
   std::vector<double> logicalStageCycles;
   std::vector<double> mixedEquivalentStageCycles;
@@ -72,6 +78,30 @@ static double mixedEquivalentStageCost(const LogicalStageCost &stage,
          outputHandoffCycles;
 }
 
+static double scopeEntryCost(const LogicalStageCost &stage,
+                             const StageTransitionCost &transition) {
+  const double activeThreads =
+      std::max(1.0, static_cast<double>(transition.simtWarpSize) *
+                        std::clamp(stage.features.activeLaneRatio, 0.0, 1.0));
+  const double inputBytes = static_cast<double>(stage.scopeInputTensorBytes);
+  return transition.get(StageMode::SIMD, StageMode::SIMT) +
+         inputBytes / transition.simdUbStoreBytesPerCycle +
+         inputBytes /
+             (transition.simtUbLoadBytesPerThreadPerCycle * activeThreads);
+}
+
+static double scopeExitCost(const LogicalStageCost &stage,
+                            const StageTransitionCost &transition) {
+  const double activeThreads =
+      std::max(1.0, static_cast<double>(transition.simtWarpSize) *
+                        std::clamp(stage.features.activeLaneRatio, 0.0, 1.0));
+  const double outputBytes = static_cast<double>(stage.scopeOutputTensorBytes);
+  return transition.get(StageMode::SIMT, StageMode::SIMD) +
+         outputBytes /
+             (transition.simtUbStoreBytesPerThreadPerCycle * activeThreads) +
+         outputBytes / transition.simdUbLoadBytesPerCycle;
+}
+
 static unsigned modeIndex(StageMode mode) {
   return mode == StageMode::SIMD ? 0u : 1u;
 }
@@ -83,6 +113,8 @@ static RouteClass initialClass(StageMode mode) {
 static RouteClass appendClass(RouteClass current, StageMode next) {
   if (current == RouteClass::Mixed)
     return current;
+  if (current == RouteClass::AllSIMTForMixed)
+    return next == StageMode::SIMT ? current : RouteClass::Mixed;
   if ((current == RouteClass::AllSIMD && next == StageMode::SIMD) ||
       (current == RouteClass::AllSIMT && next == StageMode::SIMT))
     return current;
@@ -97,11 +129,206 @@ static StageRoutePlan toPlan(const std::optional<PartialRoute> &route,
     return result;
   result.legal = true;
   result.implementations = route->implementations;
+  result.stageIndices = route->stageIndices;
   result.entryTransitionCycles = route->entryTransitionCycles;
   result.logicalStageCycles = route->logicalStageCycles;
   result.routeSuperblockFactor = route->routeSuperblockFactor;
   result.totalCycles = route->totalCycles;
   result.source = "stage_dynamic_programming";
+  return result;
+}
+
+static llvm::Expected<StageCostModelSummary>
+solveBoundaryGraphRoutes(const StageCostTable &costTable,
+                         const StageTransitionCost &transition) {
+  if (costTable.boundaryCount < 2)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "Stage Boundary Graph requires at least two boundaries");
+  using FactorRoutes = std::map<int64_t, PartialRoute>;
+  using State = std::array<std::array<FactorRoutes, 4>, 2>;
+  std::vector<State> states(static_cast<size_t>(costTable.boundaryCount));
+
+  auto record = [](State &state, PartialRoute route) {
+    auto &routes = state[modeIndex(route.exitMode)]
+                        [static_cast<unsigned>(route.routeClass)];
+    auto [slot, inserted] =
+        routes.try_emplace(route.routeSuperblockFactor, route);
+    if (!inserted && route.totalCycles < slot->second.totalCycles)
+      slot->second = std::move(route);
+  };
+
+  for (size_t boundary = 0;
+       boundary + 1 < static_cast<size_t>(costTable.boundaryCount);
+       ++boundary) {
+    for (auto indexedStage : llvm::enumerate(costTable.stages)) {
+      const LogicalStageCost &stage = indexedStage.value();
+      const size_t stageIndex = indexedStage.index();
+      if (stage.beginBoundary != static_cast<int64_t>(boundary))
+        continue;
+      if (stage.endBoundary <= stage.beginBoundary ||
+          stage.endBoundary >= costTable.boundaryCount)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "candidate Stage '%s' has invalid boundary edge [%lld, %lld)",
+            stage.id.c_str(), static_cast<long long>(stage.beginBoundary),
+            static_cast<long long>(stage.endBoundary));
+      if (stage.implementations.empty())
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "candidate Stage '%s' has no legal implementation",
+            stage.id.c_str());
+      State &target = states[static_cast<size_t>(stage.endBoundary)];
+
+      for (const StageImplementationCost &cost : stage.implementations) {
+        if (!cost.isValid())
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "candidate Stage '%s' has an invalid implementation cost",
+              stage.id.c_str());
+        if (boundary == 0) {
+          PartialRoute route;
+          route.totalCycles = cost.totalCycles;
+          route.mixedEquivalentCycles = cost.totalCycles;
+          if (cost.implementation.mode == StageMode::SIMT)
+            route.mixedEquivalentCycles += scopeEntryCost(stage, transition);
+          route.exitMode = cost.implementation.mode;
+          route.routeClass = initialClass(cost.implementation.mode);
+          route.allSimtStagesLocal =
+              cost.implementation.mode != StageMode::SIMT ||
+              (stage.localSimtMaterializable &&
+               llvm::is_contained(stage.localSimtFactors,
+                                  cost.implementation.superblockFactor));
+          route.implementations.push_back(cost.implementation);
+          route.stageIndices.push_back(stageIndex);
+          route.routeSuperblockFactor = cost.implementation.superblockFactor;
+          route.entryTransitionCycles.push_back(0.0);
+          route.logicalStageCycles.push_back(cost.totalCycles);
+          route.mixedEquivalentStageCycles.push_back(
+              route.mixedEquivalentCycles);
+          if (cost.implementation.mode == StageMode::SIMT &&
+              route.allSimtStagesLocal) {
+            PartialRoute futureMixed = route;
+            futureMixed.routeClass = RouteClass::AllSIMTForMixed;
+            futureMixed.totalCycles = futureMixed.mixedEquivalentCycles;
+            futureMixed.entryTransitionCycles.front() =
+                futureMixed.mixedEquivalentCycles - cost.totalCycles;
+            record(target, std::move(futureMixed));
+          }
+          record(target, std::move(route));
+          continue;
+        }
+
+        const State &source = states[boundary];
+        for (const auto &byClass : source) {
+          for (const auto &factorRoutes : byClass) {
+            for (const auto &factorRoute : factorRoutes) {
+              const PartialRoute &previous = factorRoute.second;
+              if (previous.routeClass == RouteClass::AllSIMT &&
+                  cost.implementation.mode == StageMode::SIMD)
+                continue;
+              const bool routeAlreadyHasSimt =
+                  previous.routeClass != RouteClass::AllSIMD;
+              if (cost.implementation.mode == StageMode::SIMT &&
+                  routeAlreadyHasSimt &&
+                  cost.implementation.superblockFactor !=
+                      previous.routeSuperblockFactor)
+                continue;
+              PartialRoute route = previous;
+              route.routeClass =
+                  appendClass(route.routeClass, cost.implementation.mode);
+              route.allSimtStagesLocal =
+                  route.allSimtStagesLocal &&
+                  (cost.implementation.mode != StageMode::SIMT ||
+                   (stage.localSimtMaterializable &&
+                    llvm::is_contained(stage.localSimtFactors,
+                                       cost.implementation.superblockFactor)));
+              if (route.routeClass == RouteClass::Mixed &&
+                  !route.allSimtStagesLocal)
+                continue;
+              route.exitMode = cost.implementation.mode;
+              route.implementations.push_back(cost.implementation);
+              route.stageIndices.push_back(stageIndex);
+              if (cost.implementation.mode == StageMode::SIMT &&
+                  !routeAlreadyHasSimt)
+                route.routeSuperblockFactor =
+                    cost.implementation.superblockFactor;
+              const double logicalStageCycles = cost.totalCycles;
+              double mixedLogicalStageCycles = logicalStageCycles;
+              double entryTransition = 0.0;
+              if (previous.exitMode == StageMode::SIMD &&
+                  cost.implementation.mode == StageMode::SIMT)
+                entryTransition = scopeEntryCost(stage, transition);
+              if (previous.exitMode == StageMode::SIMT &&
+                  cost.implementation.mode == StageMode::SIMD) {
+                const LogicalStageCost &previousStage =
+                    costTable.stages[previous.stageIndices.back()];
+                entryTransition = scopeExitCost(previousStage, transition);
+              }
+              mixedLogicalStageCycles += entryTransition;
+              route.entryTransitionCycles.push_back(entryTransition);
+              route.mixedEquivalentCycles += mixedLogicalStageCycles;
+              route.mixedEquivalentStageCycles.push_back(
+                  mixedLogicalStageCycles);
+              if (route.routeClass == RouteClass::Mixed) {
+                route.totalCycles = route.mixedEquivalentCycles;
+                route.logicalStageCycles = route.mixedEquivalentStageCycles;
+              } else {
+                route.logicalStageCycles.push_back(logicalStageCycles);
+                route.totalCycles += logicalStageCycles;
+              }
+              record(target, std::move(route));
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const State &finalState = states.back();
+  auto bestClass = [&](RouteClass routeClass) -> std::optional<PartialRoute> {
+    std::optional<PartialRoute> best;
+    for (const auto &byClass : finalState) {
+      const auto &candidates = byClass[static_cast<unsigned>(routeClass)];
+      for (const auto &factorRoute : candidates) {
+        PartialRoute candidate = factorRoute.second;
+        if (routeClass == RouteClass::Mixed &&
+            candidate.exitMode == StageMode::SIMT) {
+          const LogicalStageCost &lastStage =
+              costTable.stages[candidate.stageIndices.back()];
+          const double exitCost = scopeExitCost(lastStage, transition);
+          candidate.totalCycles += exitCost;
+          candidate.mixedEquivalentCycles += exitCost;
+          candidate.logicalStageCycles.back() += exitCost;
+          candidate.mixedEquivalentStageCycles.back() += exitCost;
+        }
+        if (!best || candidate.totalCycles < best->totalCycles)
+          best = std::move(candidate);
+      }
+    }
+    return best;
+  };
+
+  StageCostModelSummary result;
+  result.applied = true;
+  result.domain = costTable.domain;
+  result.boundarySource = costTable.boundarySource;
+  result.operationOwnershipComplete = costTable.operationOwnershipComplete;
+  result.modeledOperationCount = costTable.modeledOperationCount;
+  result.profileVersion = costTable.profileVersion;
+  result.stages = costTable.stages;
+  result.boundaryCount = costTable.boundaryCount;
+  result.discoveryJSON = costTable.discoveryJSON;
+  result.transition = transition;
+  result.allSimd =
+      toPlan(bestClass(RouteClass::AllSIMD), StageKernelRouteKind::AllSIMD);
+  result.allSimt =
+      toPlan(bestClass(RouteClass::AllSIMT), StageKernelRouteKind::AllSIMT);
+  result.mixed =
+      toPlan(bestClass(RouteClass::Mixed), StageKernelRouteKind::Mixed);
+  for (StageRoutePlan *plan : {&result.allSimd, &result.allSimt, &result.mixed})
+    if (plan->legal)
+      plan->logicalPhaseCycles.push_back(plan->totalCycles);
   return result;
 }
 
@@ -304,6 +531,10 @@ llvm::json::Object LogicalStageCost::toJSON() const {
   for (const StageImplementationCost &implementation : implementations)
     costs.push_back(implementation.toJSON());
   result["implementations"] = std::move(costs);
+  if (beginBoundary >= 0 && endBoundary > beginBoundary) {
+    result["begin_boundary"] = beginBoundary;
+    result["end_boundary"] = endBoundary;
+  }
   return result;
 }
 
@@ -329,6 +560,16 @@ llvm::json::Object StageCostTable::toJSON() const {
   for (const LogicalPhaseCost &phase : phases)
     phaseArray.push_back(phase.toJSON());
   result["phases"] = std::move(phaseArray);
+  result["boundary_count"] = boundaryCount;
+  llvm::json::Array candidates;
+  for (const LogicalStageCost &stage : stages)
+    candidates.push_back(stage.toJSON());
+  result["candidate_stages"] = std::move(candidates);
+  if (!discoveryJSON.empty()) {
+    auto parsed = llvm::json::parse(discoveryJSON);
+    if (parsed)
+      result["stage_boundary_graph"] = std::move(*parsed);
+  }
   return result;
 }
 
@@ -376,6 +617,8 @@ llvm::json::Object StageRoutePlan::toJSON() const {
   llvm::json::Array stages;
   for (size_t i = 0; i < implementations.size(); ++i) {
     llvm::json::Object stage;
+    if (i < stageIndices.size())
+      stage["candidate_stage_index"] = static_cast<int64_t>(stageIndices[i]);
     stage["implementation"] = implementations[i].toJSON();
     stage["entry_transition_system_cycles"] = entryTransitionCycles[i];
     stage["logical_stage_system_cycles"] = logicalStageCycles[i];
@@ -405,6 +648,12 @@ llvm::json::Object StageCostModelSummary::toJSON() const {
   for (const LogicalStageCost &stage : stages)
     stageArray.push_back(stage.toJSON());
   result["logical_stages"] = std::move(stageArray);
+  result["boundary_count"] = boundaryCount;
+  if (!discoveryJSON.empty()) {
+    auto parsed = llvm::json::parse(discoveryJSON);
+    if (parsed)
+      result["stage_boundary_graph"] = std::move(*parsed);
+  }
   result["transition_cost"] = transition.toJSON();
   llvm::json::Object routes;
   routes["all_simd"] = allSimd.toJSON();
@@ -425,16 +674,20 @@ mlir::ascend::solveStageRoutes(const StageCostTable &costTable,
     return llvm::createStringError(std::errc::invalid_argument,
                                    "stage transition costs must be finite and "
                                    "non-negative");
+  if (costTable.boundaryCount > 0)
+    return solveBoundaryGraphRoutes(costTable, transition);
 
   // Keep one best partial route for every (exit mode, route class,
   // whole-kernel SIMT SuperBlock factor).  Collapsing the factor dimension
   // can discard a slightly slower F1 prefix that becomes globally optimal,
   // or worse, combine F1 and F4 Stage costs into an unrealizable F4 kernel.
   using FactorRoutes = std::map<int64_t, PartialRoute>;
-  using State = std::array<std::array<FactorRoutes, 3>, 2>;
+  using State = std::array<std::array<FactorRoutes, 4>, 2>;
   State current;
   bool firstStage = true;
-  for (const LogicalStageCost &stage : costTable.stages) {
+  for (auto indexedStage : llvm::enumerate(costTable.stages)) {
+    const LogicalStageCost &stage = indexedStage.value();
+    const size_t stageIndex = indexedStage.index();
     State next;
     if (stage.implementations.empty())
       return llvm::createStringError(std::errc::invalid_argument,
@@ -460,6 +713,7 @@ mlir::ascend::solveStageRoutes(const StageCostTable &costTable,
              llvm::is_contained(stage.localSimtFactors,
                                 cost.implementation.superblockFactor));
         route.implementations.push_back(cost.implementation);
+        route.stageIndices.push_back(stageIndex);
         route.routeSuperblockFactor = cost.implementation.superblockFactor;
         route.entryTransitionCycles.push_back(0.0);
         route.logicalStageCycles.push_back(cost.totalCycles);
@@ -504,6 +758,7 @@ mlir::ascend::solveStageRoutes(const StageCostTable &costTable,
               continue;
             route.exitMode = cost.implementation.mode;
             route.implementations.push_back(cost.implementation);
+            route.stageIndices.push_back(stageIndex);
             if (cost.implementation.mode == StageMode::SIMT &&
                 !routeAlreadyHasSimt)
               route.routeSuperblockFactor =
@@ -559,6 +814,8 @@ mlir::ascend::solveStageRoutes(const StageCostTable &costTable,
   result.profileVersion = costTable.profileVersion;
   result.phases = costTable.phases;
   result.stages = costTable.stages;
+  result.boundaryCount = costTable.boundaryCount;
+  result.discoveryJSON = costTable.discoveryJSON;
   result.transition = transition;
   result.allSimd =
       toPlan(bestClass(RouteClass::AllSIMD), StageKernelRouteKind::AllSIMD);

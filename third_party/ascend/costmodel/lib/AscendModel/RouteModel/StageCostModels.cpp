@@ -1,11 +1,13 @@
 //===- StageCostModels.cpp - Per-stage analytical models -----------------===//
 
 #include "AscendModel/RouteModel/StageCostModels.h"
+#include "AscendModel/RouteModel/StageDiscovery.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/FormatVariadic.h"
 
 #include <algorithm>
 #include <array>
@@ -867,6 +869,7 @@ StageCostEvaluator::evaluate(const StagePartition &partition,
       logicalCost.simtAnchorIndices = stage.simtAnchorIndices;
       logicalCost.localSimtMaterializable = stage.localSimtMaterializable;
       logicalCost.localSimtFactors = stage.localSimtFactors;
+      logicalCost.operations = stage.operations;
 
       llvm::SmallVector<StageImplementation> implementations;
       if (stage.simdLegal)
@@ -910,6 +913,47 @@ StageCostEvaluator::evaluate(const StagePartition &partition,
       table.stages.push_back(std::move(logicalCost));
     }
     table.phases.push_back(std::move(phaseCost));
+  }
+  return table;
+}
+
+llvm::Expected<StageCostTable>
+StageCostEvaluator::evaluate(const StageBoundaryGraph &graph,
+                             const HardwareProfile &profile) const {
+  if (graph.candidates.empty() || graph.boundaryCount() < 2)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "StageBoundaryGraph requires boundaries and candidate edges");
+  StageCostTable table;
+  table.domain = graph.domain;
+  table.boundarySource = graph.boundarySource;
+  table.operationOwnershipComplete = true;
+  table.modeledOperationCount =
+      static_cast<int64_t>(graph.dependenceGraph.units.size());
+  table.profileVersion = profile.profileVersion;
+  table.boundaryCount = static_cast<int64_t>(graph.boundaryCount());
+  table.discoveryJSON =
+      llvm::formatv("{0}", llvm::json::Value(graph.toJSON())).str();
+
+  for (const CandidateStage &candidate : graph.candidates) {
+    StagePartition partition;
+    partition.domain = graph.domain;
+    partition.boundarySource = graph.boundarySource;
+    partition.operationOwnershipComplete = true;
+    partition.modeledOperationCount =
+        static_cast<int64_t>(candidate.stage.operations.size());
+    LogicalPhase phase;
+    phase.id = candidate.stage.id;
+    phase.description = candidate.stage.description;
+    phase.stages.push_back(candidate.stage);
+    partition.phases.push_back(std::move(phase));
+    auto evaluated = evaluate(partition, profile);
+    if (!evaluated)
+      return evaluated.takeError();
+    LogicalStageCost cost = std::move(evaluated->stages.front());
+    cost.beginBoundary = static_cast<int64_t>(candidate.beginBoundary);
+    cost.endBoundary = static_cast<int64_t>(candidate.endBoundary);
+    table.stages.push_back(std::move(cost));
   }
   return table;
 }

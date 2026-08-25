@@ -9,6 +9,7 @@
 
 #include "AscendModel/RouteModel/SimtAnchorAnalysis.h"
 #include "AscendModel/RouteModel/SimtSelection.h"
+#include "AscendModel/RouteModel/StageDiscovery.h"
 #include "AscendModel/Transforms/Passes.h"
 
 #include "mlir/IR/Builders.h"
@@ -196,6 +197,20 @@ LogicalResult materializeSimtAnchorPlan(ModuleOp module,
   if (materialized == 0)
     return module.emitError(
         "mixed_simd_simt has no materializable local SIMT scope");
+  return success();
+}
+
+LogicalResult materializeSimtStagePlan(ModuleOp module,
+                                       const StageMaterializationPlan &plan) {
+  if (plan.ranges.empty())
+    return module.emitError(
+        "StageMaterializationPlan contains no local SIMT range");
+  for (const SimtStageRange &range : plan.ranges) {
+    if (range.operations.empty() ||
+        failed(wrapAnchorRange(range.operations, range.operations.front())))
+      return module.emitError(
+          "StageMaterializationPlan contains an illegal SIMT range");
+  }
   return success();
 }
 

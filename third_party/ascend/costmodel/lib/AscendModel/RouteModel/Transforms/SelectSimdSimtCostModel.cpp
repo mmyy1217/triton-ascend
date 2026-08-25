@@ -10,6 +10,7 @@
 #include "AscendModel/RouteModel/SimdSimtCostModel.h"
 #include "AscendModel/RouteModel/SimtAnchorAnalysis.h"
 #include "AscendModel/RouteModel/SimtSelection.h"
+#include "AscendModel/RouteModel/StageDiscovery.h"
 #include "AscendModel/Transforms/Passes.h"
 
 #include "mlir/IR/Builders.h"
@@ -19,13 +20,16 @@
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/Support/SHA256.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <system_error>
 
@@ -82,16 +86,19 @@ buildSelectedMixedAnchorPlan(const StageCostModelSummary &stageModel,
                              const SimtAnchorPlan &completePlan) {
   SimtAnchorPlan selected;
   selected.kernelLowerability = completePlan.kernelLowerability;
-  if (!stageModel.mixed.legal ||
-      stageModel.mixed.implementations.size() != stageModel.stages.size())
+  if (!stageModel.mixed.legal || stageModel.mixed.implementations.size() !=
+                                     stageModel.mixed.stageIndices.size())
     return selected;
 
   llvm::DenseSet<unsigned> included;
-  for (size_t stageIndex = 0; stageIndex < stageModel.stages.size();
-       ++stageIndex) {
+  for (size_t position = 0; position < stageModel.mixed.implementations.size();
+       ++position) {
+    size_t stageIndex = stageModel.mixed.stageIndices[position];
+    if (stageIndex >= stageModel.stages.size())
+      continue;
     const LogicalStageCost &stage = stageModel.stages[stageIndex];
     const StageImplementation &implementation =
-        stageModel.mixed.implementations[stageIndex];
+        stageModel.mixed.implementations[position];
     if (implementation.mode != StageMode::SIMT)
       continue;
 
@@ -117,6 +124,17 @@ static LogicalResult appendJSONLine(llvm::StringRef path,
   return success();
 }
 
+static std::string hashTTIR(ModuleOp module) {
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  module.print(stream);
+  stream.flush();
+  llvm::ArrayRef<uint8_t> bytes(reinterpret_cast<const uint8_t *>(text.data()),
+                                text.size());
+  auto digest = llvm::SHA256::hash(bytes);
+  return llvm::toHex(llvm::ArrayRef<uint8_t>(digest), true);
+}
+
 struct SelectSimdSimtCostModelPass
     : public impl::SelectSimdSimtCostModelPassBase<
           SelectSimdSimtCostModelPass> {
@@ -125,6 +143,7 @@ struct SelectSimdSimtCostModelPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
     clearPreviousSelection(module);
+    const std::string ttirSha256 = hashTTIR(module);
     const bool autoMode = mode.getValue() == "auto";
 
     SimdSimtCostModelOptions options;
@@ -156,6 +175,7 @@ struct SelectSimdSimtCostModelPass
     std::string applicationReason;
     SmallVector<Operation *> mixedAnchors;
     SimtAnchorPlan selectedMixedAnchorPlan;
+    std::optional<StageMaterializationPlan> selectedStagePlan;
     int64_t selectedSuperblockFactor = 1;
     if (report.stageModel.applied) {
       if (report.decision == SimdSimtCandidateKind::AllSIMD)
@@ -175,6 +195,15 @@ struct SelectSimdSimtCostModelPass
       if (hasExplicitScope) {
         actionSupported = false;
         applicationReason = "explicit_scope_present";
+      } else if (report.stageModel.boundarySource == "stage_boundary_graph") {
+        auto plan = buildStageMaterializationPlan(report.stageModel);
+        if (!plan) {
+          llvm::consumeError(plan.takeError());
+          actionSupported = false;
+          applicationReason = "no_materializable_mixed_stage_plan";
+        } else {
+          selectedStagePlan = std::move(*plan);
+        }
       } else {
         selectedMixedAnchorPlan =
             buildSelectedMixedAnchorPlan(report.stageModel, anchorPlan);
@@ -238,13 +267,29 @@ struct SelectSimdSimtCostModelPass
 
     // Selector and Materializer consume the same immutable anchor plan in one
     // pass invocation.  No per-operation marker is persisted in TTIR.
-    if (effective == kMixedSimdSimt &&
-        failed(materializeSimtAnchorPlan(module, selectedMixedAnchorPlan))) {
-      signalPassFailure();
-      return;
+    if (effective == kMixedSimdSimt) {
+      LogicalResult materialized =
+          selectedStagePlan
+              ? materializeSimtStagePlan(module, *selectedStagePlan)
+              : materializeSimtAnchorPlan(module, selectedMixedAnchorPlan);
+      if (failed(materialized)) {
+        signalPassFailure();
+        return;
+      }
     }
 
     llvm::json::Object reportJSON = report.toJSON();
+    reportJSON["stage_model_snapshot_version"] = "1.0";
+    reportJSON["ttir_sha256"] = ttirSha256;
+    llvm::json::Object snapshotConfig;
+    snapshotConfig["actual_target"] = options.actualTarget;
+    snapshotConfig["num_warps"] = static_cast<int64_t>(options.numWarps);
+    snapshotConfig["compile_on_91095"] = options.compileOn91095;
+    snapshotConfig["whole_kernel_superblock_materializable"] =
+        options.wholeKernelSuperblockMaterializable;
+    snapshotConfig["scope_superblock_materializable"] =
+        options.scopeSuperblockMaterializable;
+    reportJSON["stage_model_config"] = std::move(snapshotConfig);
     reportJSON["mode"] = mode.getValue();
     reportJSON["recommended_decision_kind"] = recommended;
     reportJSON["effective_decision_kind"] = effective;
@@ -253,6 +298,12 @@ struct SelectSimdSimtCostModelPass
     reportJSON["action_supported"] = actionSupported;
     reportJSON["materialized_simt_anchor_count"] =
         static_cast<int64_t>(mixedAnchors.size());
+    reportJSON["materialized_simt_stage_scope_count"] =
+        selectedStagePlan
+            ? static_cast<int64_t>(selectedStagePlan->ranges.size())
+            : 0;
+    if (selectedStagePlan)
+      reportJSON["stage_materialization_plan"] = selectedStagePlan->toJSON();
     reportJSON["selected_superblock_factor"] = selectedSuperblockFactor;
     std::string json =
         llvm::formatv("{0}", llvm::json::Value(std::move(reportJSON))).str();

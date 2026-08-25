@@ -131,6 +131,36 @@ static bool isAddressOnlyLoopValue(Value root) {
   return reachesAddressUse;
 }
 
+static bool isAffineIndexInduction(BlockArgument argument) {
+  Type type = argument.getType();
+  if (auto shaped = dyn_cast<ShapedType>(type))
+    type = shaped.getElementType();
+  if (!isa<IntegerType, IndexType>(type))
+    return false;
+  Operation *loop = argument.getOwner()->getParentOp();
+  if (!loop || loop->getName().getStringRef() != "scf.for" ||
+      argument.getArgNumber() == 0)
+    return false;
+  Operation *yield = argument.getOwner()->getTerminator();
+  const unsigned resultIndex = argument.getArgNumber() - 1;
+  if (!yield || resultIndex >= yield->getNumOperands())
+    return false;
+  Operation *update = yield->getOperand(resultIndex).getDefiningOp();
+  if (!update || update->getNumOperands() != 2)
+    return false;
+  llvm::StringRef name = update->getName().getStringRef();
+  if (name != "arith.addi" && name != "arith.subi")
+    return false;
+  const bool lhsIsArgument = update->getOperand(0) == argument;
+  const bool rhsIsArgument = update->getOperand(1) == argument;
+  if (lhsIsArgument == rhsIsArgument ||
+      (name == "arith.subi" && !lhsIsArgument))
+    return false;
+  Value step = lhsIsArgument ? update->getOperand(1) : update->getOperand(0);
+  Operation *stepProducer = step.getDefiningOp();
+  return !stepProducer || stepProducer->getBlock() != argument.getOwner();
+}
+
 static int64_t getScalarBitWidth(Type type) {
   type = getScalarElementType(type);
   if (auto integer = dyn_cast<IntegerType>(type))
@@ -1593,6 +1623,7 @@ llvm::Error StageFeatureAnalysis::analyze(StagePartition &partition) const {
                 if (argument.use_empty())
                   continue;
                 if (isPointerLikeType(argument.getType()) ||
+                    isAffineIndexInduction(argument) ||
                     isAddressOnlyLoopValue(argument))
                   facts.hasPointerInduction = true;
                 else

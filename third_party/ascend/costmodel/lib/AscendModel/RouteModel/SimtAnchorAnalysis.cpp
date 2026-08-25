@@ -123,8 +123,16 @@ static bool pointerDependsOnLoadedIndex(Operation *memoryOp) {
     if (!producer)
       continue;
     llvm::StringRef name = producer->getName().getStringRef();
-    if (name == "tt.load" || name == "tt.gather")
+    if (name == "tt.gather")
       return true;
+    if (name == "tt.load") {
+      for (Type type : producer->getResultTypes()) {
+        auto shaped = dyn_cast<ShapedType>(type);
+        if (shaped && shaped.hasStaticShape() && shaped.getNumElements() > 1)
+          return true;
+      }
+      continue;
+    }
     llvm::append_range(worklist, producer->getOperands());
   }
   return false;
