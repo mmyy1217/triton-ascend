@@ -90,9 +90,6 @@ public:
   using Base = impl::TASIMTAutoBlockifyV1Base<TASIMTAutoBlockifyV1Pass>;
   using Base::Base;
 
-  explicit TASIMTAutoBlockifyV1Pass(const TASIMTAutoBlockifyV1Options &options)
-      : Base(options) {}
-
   void runOnOperation() override {
     FuncOp ttFunc = getOperation();
 
@@ -256,10 +253,6 @@ public:
   using Base = impl::TARefineSIMTAutoBlockifyV1SuperBlockBase<
       TARefineSIMTAutoBlockifyV1SuperBlockPass>;
   using Base::Base;
-
-  explicit TARefineSIMTAutoBlockifyV1SuperBlockPass(
-      const TARefineSIMTAutoBlockifyV1SuperBlockOptions &options)
-      : Base(options) {}
 
   void runOnOperation() override {
     FuncOp ttFunc = getOperation();
