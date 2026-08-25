@@ -1,6 +1,6 @@
 //===- StageCostModels.h - Per-stage analytical models --------*- C++ -*-===//
 //
-// StagePartitioner, StageCostEvaluator, and KernelRouteSolver are separate
+// StageDiscovery, StageCostEvaluator, and KernelRouteSolver are separate
 // components.  This file defines the immutable data passed between them and
 // the mode-specific StageCostModel tree used by StageCostEvaluator.
 //
@@ -69,13 +69,9 @@ struct LogicalStage {
   int64_t iterationCount = 1;
   StageModelFeatures features;
   StageWorkload workload;
-  /// Exact TTIR ownership when StagePartition was built from an operation
-  /// graph.  Feature-summary fallback partitions deliberately leave this
-  /// empty and must not be treated as materialization evidence.
+  /// Exact TTIR ownership for a Candidate Stage discovered from TTIR.
   std::vector<Operation *> operations;
-  /// SSA values crossing the Stage boundary.  These are derived from the
-  /// same exact operation ownership as `operations`; they are the contract
-  /// consumed by legality checks and the scope materializer.
+  /// SSA values crossing the Stage boundary for legality and materialization.
   std::vector<Value> liveIns;
   std::vector<Value> liveOuts;
   int64_t liveInBytes = 0;
@@ -97,22 +93,6 @@ struct LogicalStage {
   bool localSimtMaterializable = false;
   std::vector<int64_t> legalSimtFactors;
   std::vector<int64_t> localSimtFactors;
-};
-
-struct LogicalPhase {
-  std::string id;
-  std::string description;
-  std::vector<LogicalStage> stages;
-};
-
-struct StagePartition {
-  std::string domain;
-  /// "operation_graph" for exact post-transform TTIR ownership, otherwise
-  /// "feature_summary_fallback" for the temporary aggregate implementation.
-  std::string boundarySource = "feature_summary_fallback";
-  bool operationOwnershipComplete = false;
-  int64_t modeledOperationCount = 0;
-  std::vector<LogicalPhase> phases;
 };
 
 struct StageOperationRate {
@@ -227,9 +207,6 @@ public:
   explicit StageCostEvaluator(
       const StageCostModelRegistry &registry = StageCostModelRegistry::get())
       : registry(registry) {}
-
-  llvm::Expected<StageCostTable> evaluate(const StagePartition &partition,
-                                          const HardwareProfile &profile) const;
 
   llvm::Expected<StageCostTable> evaluate(const StageBoundaryGraph &graph,
                                           const HardwareProfile &profile) const;

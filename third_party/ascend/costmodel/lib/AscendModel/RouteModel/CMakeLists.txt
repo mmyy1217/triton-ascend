@@ -8,7 +8,6 @@ add_mlir_library(AscendModelRouteModel
   SimtAnchorAnalysis.cpp
   StageAnalysis.cpp
   StageDiscovery.cpp
-  StagePartitioner.cpp
   StageCostModels.cpp
   StageRouteCostModel.cpp
   SimdSimtCostModel.cpp

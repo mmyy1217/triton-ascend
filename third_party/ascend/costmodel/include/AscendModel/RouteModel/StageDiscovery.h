@@ -70,7 +70,6 @@ struct RejectedCandidateStage {
 };
 
 struct StageBoundaryGraph {
-  std::string domain = "generic_stage_discovery";
   std::string boundarySource = "stage_boundary_graph";
   StageDependenceGraph dependenceGraph;
   std::vector<CandidateStage> candidates;

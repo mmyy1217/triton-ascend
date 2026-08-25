@@ -164,21 +164,11 @@ struct LogicalStageCost {
   llvm::json::Object toJSON() const;
 };
 
-struct LogicalPhaseCost {
-  std::string id;
-  std::string description;
-  std::vector<LogicalStageCost> stages;
-
-  llvm::json::Object toJSON() const;
-};
-
 struct StageCostTable {
-  std::string domain;
   std::string boundarySource;
   bool operationOwnershipComplete = false;
   int64_t modeledOperationCount = 0;
   std::string profileVersion;
-  std::vector<LogicalPhaseCost> phases;
   std::vector<LogicalStageCost> stages;
   int64_t boundaryCount = 0;
   std::string discoveryJSON;
@@ -211,7 +201,6 @@ struct StageRoutePlan {
   std::vector<size_t> stageIndices;
   std::vector<double> entryTransitionCycles;
   std::vector<double> logicalStageCycles;
-  std::vector<double> logicalPhaseCycles;
   int64_t routeSuperblockFactor = 1;
   double totalCycles = 0.0;
   std::string source;
@@ -221,12 +210,10 @@ struct StageRoutePlan {
 
 struct StageCostModelSummary {
   bool applied = false;
-  std::string domain;
   std::string boundarySource;
   bool operationOwnershipComplete = false;
   int64_t modeledOperationCount = 0;
   std::string profileVersion;
-  std::vector<LogicalPhaseCost> phases;
   std::vector<LogicalStageCost> stages;
   int64_t boundaryCount = 0;
   std::string discoveryJSON;

@@ -11,7 +11,6 @@
 #include "AscendModel/RouteModel/SimtAnchorAnalysis.h"
 #include "AscendModel/RouteModel/StageCostModels.h"
 #include "AscendModel/RouteModel/StageDiscovery.h"
-#include "AscendModel/RouteModel/StagePartitioner.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -1251,9 +1250,8 @@ static llvm::Expected<std::optional<StageCostModelSummary>> evaluateStageModel(
     unsigned numWarps, bool wholeKernelSuperblockMaterializable,
     bool scopeSuperblockMaterializable, ModuleOp module = nullptr,
     const SimtAnchorPlan *anchorPlan = nullptr) {
-  StagePartitionerOptions partitionerOptions;
-  partitionerOptions.tinyDotFlopsMax = profile.structural.tinyDotFlopsMax;
-  partitionerOptions.maximumSuperblockFactor =
+  (void)scopeSuperblockMaterializable;
+  int64_t maximumSuperblockFactor =
       (wholeKernelSuperblockMaterializable || features.autoBlockifyV1Applied)
           ? 4
           : 1;
@@ -1265,22 +1263,12 @@ static llvm::Expected<std::optional<StageCostModelSummary>> evaluateStageModel(
         launchWarpLimit = 32;
     });
   }
-  while (partitionerOptions.maximumSuperblockFactor > 1 &&
-         partitionerOptions.maximumSuperblockFactor *
-                 static_cast<int64_t>(numWarps) >
+  while (maximumSuperblockFactor > 1 &&
+         maximumSuperblockFactor * static_cast<int64_t>(numWarps) >
              launchWarpLimit)
-    partitionerOptions.maximumSuperblockFactor /= 2;
-  partitionerOptions.scopeSuperblockMaterializable =
-      scopeSuperblockMaterializable;
-  StagePartitioner partitioner;
-  auto partition =
-      module && anchorPlan ? partitioner.partition(module, *anchorPlan,
-                                                   features, partitionerOptions)
-      : anchorPlan
-          ? partitioner.partition(features, partitionerOptions, *anchorPlan)
-          : partitioner.partition(features, partitionerOptions);
-  if (!partition)
-    return partition.takeError();
+    maximumSuperblockFactor /= 2;
+  if (!module || !anchorPlan)
+    return std::optional<StageCostModelSummary>{};
 
   HardwareProfile hardwareProfile =
       buildStageHardwareProfile(profile, numWarps);
@@ -1288,28 +1276,13 @@ static llvm::Expected<std::optional<StageCostModelSummary>> evaluateStageModel(
   auto snapshot = provider.getSnapshot(profile.target, profile.profileVersion);
   if (!snapshot)
     return snapshot.takeError();
-  StageCostEvaluator evaluator;
-  if (!*partition) {
-    if (!module || !anchorPlan)
-      return std::optional<StageCostModelSummary>{};
-    StageDiscoveryOptions discoveryOptions;
-    discoveryOptions.tinyDotFlopsMax = profile.structural.tinyDotFlopsMax;
-    discoveryOptions.maximumSuperblockFactor =
-        partitionerOptions.maximumSuperblockFactor;
-    auto graph =
-        StageDiscovery().discover(module, *anchorPlan, discoveryOptions);
-    if (!graph)
-      return graph.takeError();
-    auto graphCostTable = evaluator.evaluate(*graph, **snapshot);
-    if (!graphCostTable)
-      return graphCostTable.takeError();
-    auto graphRoutes =
-        solveStageRoutes(*graphCostTable, (*snapshot)->transition);
-    if (!graphRoutes)
-      return graphRoutes.takeError();
-    return std::optional<StageCostModelSummary>{std::move(*graphRoutes)};
-  }
-  auto costTable = evaluator.evaluate(**partition, **snapshot);
+  StageDiscoveryOptions discoveryOptions;
+  discoveryOptions.tinyDotFlopsMax = profile.structural.tinyDotFlopsMax;
+  discoveryOptions.maximumSuperblockFactor = maximumSuperblockFactor;
+  auto graph = StageDiscovery().discover(module, *anchorPlan, discoveryOptions);
+  if (!graph)
+    return graph.takeError();
+  auto costTable = StageCostEvaluator().evaluate(*graph, **snapshot);
   if (!costTable)
     return costTable.takeError();
   auto routes = solveStageRoutes(*costTable, (*snapshot)->transition);

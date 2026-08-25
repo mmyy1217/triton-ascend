@@ -416,7 +416,6 @@ llvm::json::Object RejectedCandidateStage::toJSON() const {
 
 llvm::json::Object StageBoundaryGraph::toJSON() const {
   llvm::json::Object result;
-  result["domain"] = domain;
   result["boundary_source"] = boundarySource;
   result["boundary_count"] = static_cast<int64_t>(boundaryCount());
   result["dependence_graph"] = dependenceGraph.toJSON();
