@@ -69,7 +69,7 @@ struct LogicalStage {
   int64_t iterationCount = 1;
   StageModelFeatures features;
   StageWorkload workload;
-  /// Exact TTIR ownership for a Candidate Stage discovered from TTIR.
+  /// Exact TTIR ownership for one Stage discovered from TTIR.
   std::vector<Operation *> operations;
   /// SSA values crossing the Stage boundary for legality and materialization.
   std::vector<Value> liveIns;

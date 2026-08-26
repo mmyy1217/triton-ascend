@@ -209,24 +209,24 @@ static bool hasImplementation(const LogicalStageCost &stage, StageMode mode) {
                       });
 }
 
-static llvm::Error removeOldCandidateFiles(llvm::StringRef candidatePath) {
+static llvm::Error removeOldStageFiles(llvm::StringRef stagePath) {
   std::error_code error;
-  llvm::sys::fs::directory_iterator iterator(candidatePath, error), end;
+  llvm::sys::fs::directory_iterator iterator(stagePath, error), end;
   if (error)
     return llvm::createStringError(
-        error, "StageModel snapshot cannot inspect candidate directory `%s`",
-        candidatePath.str().c_str());
+        error, "StageModel snapshot cannot inspect Stage directory `%s`",
+        stagePath.str().c_str());
   for (; iterator != end; iterator.increment(error)) {
     if (error)
       return llvm::createStringError(
-          error, "StageModel snapshot cannot scan candidate directory `%s`",
-          candidatePath.str().c_str());
+          error, "StageModel snapshot cannot scan Stage directory `%s`",
+          stagePath.str().c_str());
     if (llvm::sys::path::extension(iterator->path()) != ".json")
       continue;
     error = llvm::sys::fs::remove(iterator->path());
     if (error)
       return llvm::createStringError(
-          error, "StageModel snapshot cannot remove stale candidate `%s`",
+          error, "StageModel snapshot cannot remove stale Stage `%s`",
           iterator->path().c_str());
   }
   return llvm::Error::success();
@@ -261,16 +261,16 @@ static llvm::Error writeStageModelSnapshot(
                     llvm::StringRef(configSha256).take_front(12))
           .str();
   llvm::SmallString<256> snapshotPath = childPath(rootPath, directoryName);
-  llvm::SmallString<256> candidatePath = childPath(snapshotPath, "candidates");
-  if (std::error_code error = llvm::sys::fs::create_directories(candidatePath))
+  llvm::SmallString<256> stagePath = childPath(snapshotPath, "stages");
+  if (std::error_code error = llvm::sys::fs::create_directories(stagePath))
     return llvm::createStringError(
         error, "StageModel snapshot cannot create directory `%s`",
-        candidatePath.c_str());
+        stagePath.c_str());
 
   llvm::SmallString<256> manifestPath =
       childPath(snapshotPath, "manifest.json");
   llvm::sys::fs::remove(manifestPath);
-  if (auto error = removeOldCandidateFiles(candidatePath))
+  if (auto error = removeOldStageFiles(stagePath))
     return error;
 
   llvm::json::Object config;
@@ -296,7 +296,7 @@ static llvm::Error writeStageModelSnapshot(
     return error;
 
   llvm::json::Object summary;
-  summary["stage_model_snapshot_version"] = "2.1";
+  summary["stage_model_snapshot_version"] = "3.0";
   summary["report_schema_version"] = report.schemaVersion;
   summary["kernel_name"] = kernelName;
   summary["ttir_sha256"] = ttirSha256;
@@ -363,11 +363,11 @@ static llvm::Error writeStageModelSnapshot(
                                    std::move(features)))
     return error;
 
-  llvm::json::Array semanticUnits;
+  llvm::json::Array discoveredStages;
   llvm::json::Array dependenceEdges;
   llvm::json::Array cuttableBoundaries;
-  llvm::json::Array rejectedCandidates;
-  llvm::json::Array *discoveryCandidates = nullptr;
+  llvm::json::Array rejectedStages;
+  llvm::json::Array *discoveryStages = nullptr;
   std::optional<llvm::json::Value> discovery;
   if (!report.stageModel.discoveryJSON.empty()) {
     auto parsed = llvm::json::parse(report.stageModel.discoveryJSON);
@@ -377,25 +377,25 @@ static llvm::Error writeStageModelSnapshot(
           "StageModel snapshot cannot parse Stage Boundary Graph JSON");
     discovery = std::move(*parsed);
     if (auto *graph = discovery->getAsObject()) {
-      discoveryCandidates = graph->getArray("candidates");
+      discoveryStages = graph->getArray("stages");
       if (auto *dependence = graph->getObject("dependence_graph")) {
-        if (auto *units = dependence->getArray("semantic_units"))
-          semanticUnits = std::move(*units);
+        if (auto *stages = dependence->getArray("stages"))
+          discoveredStages = std::move(*stages);
         if (auto *edges = dependence->getArray("edges"))
           dependenceEdges = std::move(*edges);
         if (auto *boundaries = dependence->getArray("cuttable_boundaries"))
           cuttableBoundaries = std::move(*boundaries);
       }
-      if (auto *rejected = graph->getArray("rejected_candidates"))
-        rejectedCandidates = std::move(*rejected);
+      if (auto *rejected = graph->getArray("rejected_stages"))
+        rejectedStages = std::move(*rejected);
     }
   }
 
-  llvm::json::Object unitsJSON;
-  unitsJSON["count"] = static_cast<int64_t>(semanticUnits.size());
-  unitsJSON["semantic_units"] = std::move(semanticUnits);
-  if (auto error = writePrettyJSON(
-          childPath(snapshotPath, "semantic-units.json"), std::move(unitsJSON)))
+  llvm::json::Object stagesJSON;
+  stagesJSON["count"] = static_cast<int64_t>(discoveredStages.size());
+  stagesJSON["stages"] = std::move(discoveredStages);
+  if (auto error = writePrettyJSON(childPath(snapshotPath, "stages.json"),
+                                   std::move(stagesJSON)))
     return error;
 
   llvm::json::Object dependenceJSON;
@@ -407,27 +407,25 @@ static llvm::Error writeStageModelSnapshot(
                           std::move(dependenceJSON)))
     return error;
 
-  llvm::json::Array candidateIndex;
-  llvm::json::Array candidateFiles;
+  llvm::json::Array stageIndex;
+  llvm::json::Array stageFiles;
   for (auto indexedStage : llvm::enumerate(report.stageModel.stages)) {
     const LogicalStageCost &stage = indexedStage.value();
     std::string fileName = llvm::formatv("stage-{0}-{1}.json",
                                          stage.beginBoundary, stage.endBoundary)
                                .str();
-    llvm::json::Object candidate;
-    candidate["candidate_stage_index"] =
-        static_cast<int64_t>(indexedStage.index());
-    if (discoveryCandidates &&
-        indexedStage.index() < discoveryCandidates->size())
-      candidate["discovery"] =
-          std::move((*discoveryCandidates)[indexedStage.index()]);
-    candidate["pricing"] = stage.toJSON();
-    if (auto error = writePrettyJSON(childPath(candidatePath, fileName),
-                                     std::move(candidate)))
+    llvm::json::Object stageRecord;
+    stageRecord["stage_index"] = static_cast<int64_t>(indexedStage.index());
+    if (discoveryStages && indexedStage.index() < discoveryStages->size())
+      stageRecord["discovery"] =
+          std::move((*discoveryStages)[indexedStage.index()]);
+    stageRecord["pricing"] = stage.toJSON();
+    if (auto error = writePrettyJSON(childPath(stagePath, fileName),
+                                     std::move(stageRecord)))
       return error;
 
     llvm::json::Object item;
-    item["candidate_stage_index"] = static_cast<int64_t>(indexedStage.index());
+    item["stage_index"] = static_cast<int64_t>(indexedStage.index());
     item["id"] = stage.id;
     item["begin_boundary"] = stage.beginBoundary;
     item["end_boundary"] = stage.endBoundary;
@@ -436,15 +434,14 @@ static llvm::Error writeStageModelSnapshot(
     item["simt_legal"] = hasImplementation(stage, StageMode::SIMT);
     item["local_simt_materializable"] = stage.localSimtMaterializable;
     item["file"] = fileName;
-    candidateIndex.push_back(std::move(item));
-    candidateFiles.push_back((llvm::Twine("candidates/") + fileName).str());
+    stageIndex.push_back(std::move(item));
+    stageFiles.push_back((llvm::Twine("stages/") + fileName).str());
   }
-  llvm::json::Object candidateIndexJSON;
-  candidateIndexJSON["candidate_count"] =
-      static_cast<int64_t>(candidateIndex.size());
-  candidateIndexJSON["candidates"] = std::move(candidateIndex);
-  if (auto error = writePrettyJSON(childPath(candidatePath, "index.json"),
-                                   std::move(candidateIndexJSON)))
+  llvm::json::Object stageIndexJSON;
+  stageIndexJSON["stage_count"] = static_cast<int64_t>(stageIndex.size());
+  stageIndexJSON["stages"] = std::move(stageIndex);
+  if (auto error = writePrettyJSON(childPath(stagePath, "index.json"),
+                                   std::move(stageIndexJSON)))
     return error;
 
   llvm::json::Object boundaryGraph;
@@ -456,12 +453,12 @@ static llvm::Error writeStageModelSnapshot(
   boundaryGraph["modeled_operation_count"] =
       report.stageModel.modeledOperationCount;
   boundaryGraph["profile_version"] = report.stageModel.profileVersion;
-  boundaryGraph["candidate_count"] =
+  boundaryGraph["stage_count"] =
       static_cast<int64_t>(report.stageModel.stages.size());
-  boundaryGraph["rejected_candidates"] = std::move(rejectedCandidates);
-  boundaryGraph["semantic_units_file"] = "semantic-units.json";
+  boundaryGraph["rejected_stages"] = std::move(rejectedStages);
+  boundaryGraph["stages_file"] = "stages.json";
   boundaryGraph["dependence_graph_file"] = "dependence-graph.json";
-  boundaryGraph["candidate_index_file"] = "candidates/index.json";
+  boundaryGraph["stage_index_file"] = "stages/index.json";
   if (auto error =
           writePrettyJSON(childPath(snapshotPath, "stage-boundary-graph.json"),
                           std::move(boundaryGraph)))
@@ -498,13 +495,13 @@ static llvm::Error writeStageModelSnapshot(
     return error;
 
   llvm::json::Array files({"summary.json", "config.json", "features.json",
-                           "semantic-units.json", "dependence-graph.json",
-                           "stage-boundary-graph.json", "candidates/index.json",
+                           "stages.json", "dependence-graph.json",
+                           "stage-boundary-graph.json", "stages/index.json",
                            "routes.json", "materialization-plan.json"});
-  for (llvm::json::Value &file : candidateFiles)
+  for (llvm::json::Value &file : stageFiles)
     files.push_back(std::move(file));
   llvm::json::Object manifest;
-  manifest["stage_model_snapshot_version"] = "2.1";
+  manifest["stage_model_snapshot_version"] = "3.0";
   manifest["complete"] = true;
   manifest["kernel_name"] = kernelName;
   manifest["ttir_sha256"] = ttirSha256;
@@ -682,7 +679,7 @@ struct SelectSimdSimtCostModelPass
     }
 
     llvm::json::Object reportJSON = report.toJSON();
-    reportJSON["stage_model_snapshot_version"] = "2.1";
+    reportJSON["stage_model_snapshot_version"] = "3.0";
     reportJSON["ttir_sha256"] = ttirSha256;
     llvm::json::Object snapshotConfig;
     snapshotConfig["actual_target"] = options.actualTarget;

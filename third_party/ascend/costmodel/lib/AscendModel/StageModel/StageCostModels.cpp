@@ -827,7 +827,8 @@ evaluateStage(const LogicalStage &stage, const HardwareProfile &profile,
   logicalCost.iterationCount = stage.iterationCount;
   logicalCost.features = stage.features;
   logicalCost.workload = stage.workload;
-  logicalCost.ownedOperationCount = static_cast<int64_t>(stage.operations.size());
+  logicalCost.ownedOperationCount =
+      static_cast<int64_t>(stage.operations.size());
   logicalCost.liveInCount = static_cast<int64_t>(stage.liveIns.size());
   logicalCost.liveOutCount = static_cast<int64_t>(stage.liveOuts.size());
   logicalCost.liveInBytes = stage.liveInBytes;
@@ -855,10 +856,9 @@ evaluateStage(const LogicalStage &stage, const HardwareProfile &profile,
     auto model = registry.lookup(implementation.mode, stage.costModelKind);
     if (!model)
       return model.takeError();
-    StageResourceCycles resources =
-        implementation.mode == StageMode::SIMD
-            ? mapSIMDWorkload(stage, profile.simd)
-            : mapSIMTWorkload(stage, profile.simt);
+    StageResourceCycles resources = implementation.mode == StageMode::SIMD
+                                        ? mapSIMDWorkload(stage, profile.simd)
+                                        : mapSIMTWorkload(stage, profile.simt);
     const StageCostModelContext context{stage, profile};
     StageImplementationCost cost;
     cost.implementation = implementation;
@@ -867,9 +867,9 @@ evaluateStage(const LogicalStage &stage, const HardwareProfile &profile,
     cost.profileVersion = profile.profileVersion;
     cost.source =
         "post-transform TTIR StageWorkload + immutable HardwareProfile";
-    cost.totalCycles = applySuperBlock(
-        stage, resources, implementation, profile,
-        (*model)->estimate(context, implementation, resources));
+    cost.totalCycles =
+        applySuperBlock(stage, resources, implementation, profile,
+                        (*model)->estimate(context, implementation, resources));
     if (!cost.isValid())
       return llvm::createStringError(std::errc::invalid_argument,
                                      "Stage '%s' produced an invalid cost",
@@ -882,7 +882,7 @@ evaluateStage(const LogicalStage &stage, const HardwareProfile &profile,
 llvm::Expected<StageCostTable>
 StageCostEvaluator::evaluate(const StageBoundaryGraph &graph,
                              const HardwareProfile &profile) const {
-  if (graph.candidates.empty() || graph.boundaryCount() < 2)
+  if (graph.stages.empty() || graph.boundaryCount() < 2)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "StageBoundaryGraph requires boundaries and candidate edges");
@@ -895,19 +895,19 @@ StageCostEvaluator::evaluate(const StageBoundaryGraph &graph,
   table.boundarySource = graph.boundarySource;
   table.operationOwnershipComplete = true;
   table.modeledOperationCount =
-      static_cast<int64_t>(graph.dependenceGraph.units.size());
+      static_cast<int64_t>(graph.dependenceGraph.stages.size());
   table.profileVersion = profile.profileVersion;
   table.boundaryCount = static_cast<int64_t>(graph.boundaryCount());
   table.discoveryJSON =
       llvm::formatv("{0}", llvm::json::Value(graph.toJSON())).str();
 
-  for (const CandidateStage &candidate : graph.candidates) {
-    auto evaluated = evaluateStage(candidate.stage, profile, registry);
+  for (const DiscoveredStage &stage : graph.stages) {
+    auto evaluated = evaluateStage(stage.stage, profile, registry);
     if (!evaluated)
       return evaluated.takeError();
     LogicalStageCost cost = std::move(*evaluated);
-    cost.beginBoundary = static_cast<int64_t>(candidate.beginBoundary);
-    cost.endBoundary = static_cast<int64_t>(candidate.endBoundary);
+    cost.beginBoundary = static_cast<int64_t>(stage.beginBoundary);
+    cost.endBoundary = static_cast<int64_t>(stage.endBoundary);
     table.stages.push_back(std::move(cost));
   }
   return table;

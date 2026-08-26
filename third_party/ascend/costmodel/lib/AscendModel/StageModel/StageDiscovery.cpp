@@ -16,7 +16,6 @@
 
 #include <algorithm>
 #include <limits>
-#include <set>
 #include <system_error>
 
 using namespace mlir;
@@ -66,21 +65,6 @@ static bool containsName(Operation *root, llvm::StringRef expected) {
   bool found = root->getName().getStringRef() == expected;
   root->walk([&](Operation *nested) {
     found |= nested->getName().getStringRef() == expected;
-  });
-  return found;
-}
-
-static bool hasVectorValue(Operation *root) {
-  bool found = false;
-  root->walk([&](Operation *operation) {
-    auto inspect = [&](Value value) {
-      auto shaped = dyn_cast<ShapedType>(value.getType());
-      found |= shaped && shaped.hasStaticShape() && shaped.getNumElements() > 1;
-    };
-    for (Value value : operation->getOperands())
-      inspect(value);
-    for (Value value : operation->getResults())
-      inspect(value);
   });
   return found;
 }
@@ -346,7 +330,7 @@ llvm::json::Object StageDependenceEdge::toJSON() const {
   return result;
 }
 
-llvm::json::Object StageSemanticUnit::toJSON() const {
+llvm::json::Object StageUnit::toJSON() const {
   llvm::json::Object result;
   result["index"] = static_cast<int64_t>(index);
   result["operation"] = operation ? operation->getName().getStringRef().str()
@@ -364,9 +348,9 @@ bool StageDependenceGraph::canCut(size_t boundary) const {
 llvm::json::Object StageDependenceGraph::toJSON() const {
   llvm::json::Object result;
   llvm::json::Array unitArray;
-  for (const StageSemanticUnit &unit : units)
-    unitArray.push_back(unit.toJSON());
-  result["semantic_units"] = std::move(unitArray);
+  for (const StageUnit &stage : stages)
+    unitArray.push_back(stage.toJSON());
+  result["stages"] = std::move(unitArray);
   llvm::json::Array edgeArray;
   for (const StageDependenceEdge &edge : edges)
     edgeArray.push_back(edge.toJSON());
@@ -378,14 +362,13 @@ llvm::json::Object StageDependenceGraph::toJSON() const {
   return result;
 }
 
-llvm::json::Object CandidateStage::toJSON() const {
+llvm::json::Object DiscoveredStage::toJSON() const {
   llvm::json::Object result;
   result["index"] = static_cast<int64_t>(index);
   result["begin_boundary"] = static_cast<int64_t>(beginBoundary);
   result["end_boundary"] = static_cast<int64_t>(endBoundary);
   result["id"] = stage.id;
   result["model"] = stringifyStageCostModel(stage.costModelKind);
-  result["fallback"] = fallback;
   result["owned_operation_count"] =
       static_cast<int64_t>(stage.operations.size());
   result["live_in_count"] = static_cast<int64_t>(stage.liveIns.size());
@@ -406,7 +389,7 @@ llvm::json::Object CandidateStage::toJSON() const {
   return result;
 }
 
-llvm::json::Object RejectedCandidateStage::toJSON() const {
+llvm::json::Object RejectedStage::toJSON() const {
   llvm::json::Object result;
   result["begin_boundary"] = static_cast<int64_t>(beginBoundary);
   result["end_boundary"] = static_cast<int64_t>(endBoundary);
@@ -419,14 +402,14 @@ llvm::json::Object StageBoundaryGraph::toJSON() const {
   result["boundary_source"] = boundarySource;
   result["boundary_count"] = static_cast<int64_t>(boundaryCount());
   result["dependence_graph"] = dependenceGraph.toJSON();
-  llvm::json::Array candidateArray;
-  for (const CandidateStage &candidate : candidates)
-    candidateArray.push_back(candidate.toJSON());
-  result["candidates"] = std::move(candidateArray);
+  llvm::json::Array stageArray;
+  for (const DiscoveredStage &stage : stages)
+    stageArray.push_back(stage.toJSON());
+  result["stages"] = std::move(stageArray);
   llvm::json::Array rejectedArray;
-  for (const RejectedCandidateStage &candidate : rejectedCandidates)
-    rejectedArray.push_back(candidate.toJSON());
-  result["rejected_candidates"] = std::move(rejectedArray);
+  for (const RejectedStage &stage : rejectedStages)
+    rejectedArray.push_back(stage.toJSON());
+  result["rejected_stages"] = std::move(rejectedArray);
   return result;
 }
 
@@ -441,7 +424,7 @@ StageDependenceAnalysis::analyze(ModuleOp module,
   if (roots.empty())
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "StageDependenceAnalysis found no top-level semantic unit");
+        "StageDependenceAnalysis found no Stage semantic unit");
 
   llvm::DenseMap<Operation *, size_t> owners;
   for (auto indexedRoot : llvm::enumerate(roots))
@@ -464,29 +447,8 @@ StageDependenceAnalysis::analyze(ModuleOp module,
       anchorEvidence |= anchorOperations.contains(operation);
     });
     std::string evidence = classifyEvidence(root, anchorEvidence);
-    graph.units.push_back({indexedRoot.index(), root, anchorEvidence,
-                           evidence != "semantic_unit", evidence});
-  }
-
-  for (const SimtAnchorDescriptor &anchor : anchorPlan.anchors) {
-    llvm::SmallVector<size_t> unitIndices;
-    auto appendUnit = [&](Operation *operation) {
-      auto owner = owners.find(operation);
-      if (owner != owners.end() &&
-          !llvm::is_contained(unitIndices, owner->second))
-        unitIndices.push_back(owner->second);
-    };
-    if (anchor.scopeOperations.empty())
-      appendUnit(anchor.operation);
-    else
-      for (Operation *operation : anchor.scopeOperations)
-        appendUnit(operation);
-    if (unitIndices.size() > 1) {
-      auto [minimum, maximum] =
-          std::minmax_element(unitIndices.begin(), unitIndices.end());
-      for (size_t boundary = *minimum + 1; boundary <= *maximum; ++boundary)
-        graph.cuttableBoundaries[boundary] = false;
-    }
+    graph.stages.push_back({indexedRoot.index(), root, anchorEvidence,
+                            evidence != "semantic_unit", evidence});
   }
 
   llvm::StringSet<> seenEdges;
@@ -545,143 +507,73 @@ StageDiscovery::discover(ModuleOp module, const SimtAnchorPlan &anchorPlan,
     return dependence.takeError();
   StageBoundaryGraph graph;
   graph.dependenceGraph = std::move(*dependence);
-  size_t unitCount = graph.dependenceGraph.units.size();
-  if (options.maximumCandidateCount == 0)
+  size_t stageCount = graph.dependenceGraph.stages.size();
+  if (options.maximumStageCount == 0)
     return llvm::createStringError(std::errc::invalid_argument,
-                                   "StageDiscovery candidate limit is zero");
+                                   "StageDiscovery Stage limit is zero");
+  if (stageCount > options.maximumStageCount)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "StageDiscovery found %zu Stages, exceeding limit %zu", stageCount,
+        options.maximumStageCount);
 
-  using CandidateInterval = std::pair<size_t, size_t>;
-  std::vector<CandidateInterval> intervals;
-  std::set<CandidateInterval> seenIntervals;
-  std::set<CandidateInterval> fallbackIntervals;
-  auto addInterval = [&](size_t begin, size_t end) {
-    if (begin >= end || !graph.dependenceGraph.canCut(begin) ||
-        !graph.dependenceGraph.canCut(end) ||
-        !seenIntervals.insert({begin, end}).second)
-      return;
-    intervals.push_back({begin, end});
-  };
-
-  std::vector<size_t> cutPoints;
-  for (size_t boundary = 0; boundary <= unitCount; ++boundary)
-    if (graph.dependenceGraph.canCut(boundary))
-      cutPoints.push_back(boundary);
-  for (size_t index = 1; index < cutPoints.size(); ++index) {
-    addInterval(cutPoints[index - 1], cutPoints[index]);
-    fallbackIntervals.insert({cutPoints[index - 1], cutPoints[index]});
-  }
-  addInterval(0, unitCount);
-  fallbackIntervals.insert({0, unitCount});
-
-  std::vector<bool> vectorUnits;
-  vectorUnits.reserve(unitCount);
-  for (const StageSemanticUnit &unit : graph.dependenceGraph.units)
-    vectorUnits.push_back(hasVectorValue(unit.operation));
-  for (size_t boundary = 1; boundary < unitCount; ++boundary) {
-    if (vectorUnits[boundary - 1] == vectorUnits[boundary])
-      continue;
-    addInterval(0, boundary);
-    addInterval(boundary, unitCount);
-  }
-
-  for (size_t begin = 0;
-       begin < unitCount && intervals.size() < options.maximumCandidateCount;
-       ++begin)
-    for (size_t end = begin + 1;
-         end <= unitCount && intervals.size() < options.maximumCandidateCount;
-         ++end)
-      addInterval(begin, end);
-
-  for (CandidateInterval interval : intervals) {
-    size_t begin = interval.first;
-    size_t end = interval.second;
-    bool wholeKernel = begin == 0 && end == unitCount;
-    bool minimumEdge = fallbackIntervals.count(interval) != 0;
-
-    CandidateStage candidate;
-    candidate.beginBoundary = begin;
-    candidate.endBoundary = end;
-    candidate.fallback = wholeKernel || minimumEdge;
-    candidate.stage.id = llvm::formatv("candidate_b{0}_b{1}", begin, end).str();
-    candidate.stage.description = "generic contiguous TTIR candidate";
-    candidate.stage.iterationCount = 1;
-    for (size_t index = begin; index < end; ++index) {
-      const StageSemanticUnit &unit = graph.dependenceGraph.units[index];
-      candidate.stage.operations.push_back(unit.operation);
-      if (unit.seedEvidence || unit.anchorEvidence)
-        candidate.evidence.push_back(unit.evidence);
-    }
-    llvm::sort(candidate.evidence);
-    candidate.evidence.erase(
-        std::unique(candidate.evidence.begin(), candidate.evidence.end()),
-        candidate.evidence.end());
-    deriveLiveValues(candidate.stage);
-
-    if (!candidate.fallback && candidate.evidence.empty()) {
-      graph.rejectedCandidates.push_back(
-          {begin, end, "missing_anchor_or_seed"});
-      continue;
-    }
+  for (const StageUnit &unit : graph.dependenceGraph.stages) {
+    DiscoveredStage discovered;
+    discovered.beginBoundary = unit.index;
+    discovered.endBoundary = unit.index + 1;
+    discovered.stage.id = llvm::formatv("stage_{0}", unit.index).str();
+    discovered.stage.description = "TTIR Stage semantic unit";
+    discovered.stage.iterationCount = 1;
+    discovered.stage.operations.push_back(unit.operation);
+    discovered.evidence.push_back(unit.evidence);
+    deriveLiveValues(discovered.stage);
 
     bool conservativeFallback = false;
     if (llvm::Error error =
-            analyzeCandidate(candidate.stage, options.tinyDotFlopsMax)) {
+            analyzeCandidate(discovered.stage, options.tinyDotFlopsMax)) {
       std::string reason = llvm::toString(std::move(error));
-      graph.rejectedCandidates.push_back({begin, end, reason});
-      if (!candidate.fallback)
-        continue;
-      makeConservativeFallback(candidate.stage);
+      graph.rejectedStages.push_back({unit.index, unit.index + 1, reason});
+      makeConservativeFallback(discovered.stage);
       conservativeFallback = true;
-      candidate.evidence.push_back("conservative_simd_fallback");
+      discovered.evidence.push_back("conservative_simd_fallback");
     }
 
-    candidate.stage.simdLegal = true;
-    candidate.stage.simtLegal = !conservativeFallback;
-    if (candidate.stage.simtLegal) {
-      candidate.stage.legalSimtFactors = {1};
-      if (wholeKernel && options.maximumSuperblockFactor >= 2)
-        candidate.stage.legalSimtFactors.push_back(2);
-      if (wholeKernel && options.maximumSuperblockFactor >= 4)
-        candidate.stage.legalSimtFactors.push_back(4);
+    discovered.stage.simdLegal = true;
+    discovered.stage.simtLegal = !conservativeFallback;
+    if (discovered.stage.simtLegal) {
+      discovered.stage.legalSimtFactors = {1};
+      if (options.maximumSuperblockFactor >= 2)
+        discovered.stage.legalSimtFactors.push_back(2);
+      if (options.maximumSuperblockFactor >= 4)
+        discovered.stage.legalSimtFactors.push_back(4);
     }
 
-    bool partial = !wholeKernel;
     bool contiguous =
-        isContiguousMaterializableRange(candidate.stage.operations);
+        isContiguousMaterializableRange(discovered.stage.operations);
     bool lowerable =
-        llvm::all_of(candidate.stage.operations, isGenericLocalSimtLowerable);
-    candidate.stage.localSimtMaterializable =
-        partial && contiguous && lowerable;
-    if (!partial)
-      candidate.localSimtRejectionReason = "whole_kernel_candidate";
-    else if (!contiguous)
-      candidate.localSimtRejectionReason =
+        llvm::all_of(discovered.stage.operations, isGenericLocalSimtLowerable);
+    discovered.stage.localSimtMaterializable = contiguous && lowerable;
+    if (!contiguous)
+      discovered.localSimtRejectionReason =
           "non_contiguous_or_structurally_illegal";
     else if (!lowerable)
-      candidate.localSimtRejectionReason = "unsupported_generic_simt_operation";
-    if (candidate.stage.localSimtMaterializable) {
-      candidate.stage.localSimtFactors = {1};
-      candidate.stage.localSimtScopeCount = 1;
-      candidate.stage.scopeInputTensorBytes = candidate.stage.liveInBytes;
-      candidate.stage.scopeOutputTensorBytes = candidate.stage.liveOutBytes;
+      discovered.localSimtRejectionReason =
+          "unsupported_generic_simt_operation";
+    if (discovered.stage.localSimtMaterializable) {
+      discovered.stage.localSimtFactors = {1};
+      discovered.stage.localSimtScopeCount = 1;
+      discovered.stage.scopeInputTensorBytes = discovered.stage.liveInBytes;
+      discovered.stage.scopeOutputTensorBytes = discovered.stage.liveOutBytes;
     }
     for (auto indexedAnchor : llvm::enumerate(anchorPlan.anchors))
       if (indexedAnchor.value().materializable &&
-          ownsAnchor(candidate.stage, indexedAnchor.value()))
-        candidate.stage.simtAnchorIndices.push_back(
+          ownsAnchor(discovered.stage, indexedAnchor.value()))
+        discovered.stage.simtAnchorIndices.push_back(
             static_cast<unsigned>(indexedAnchor.index()));
 
-    candidate.index = graph.candidates.size();
-    graph.candidates.push_back(std::move(candidate));
+    discovered.index = graph.stages.size();
+    graph.stages.push_back(std::move(discovered));
   }
-
-  bool hasWholeKernel = llvm::any_of(graph.candidates, [&](const auto &edge) {
-    return edge.beginBoundary == 0 && edge.endBoundary == unitCount;
-  });
-  if (!hasWholeKernel)
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "StageDiscovery failed to preserve whole-kernel fallback");
   return graph;
 }
 
@@ -720,7 +612,7 @@ mlir::ascend::buildStageMaterializationPlan(
     for (const ScopeRunCost &scopeRun : route.scopeRuns) {
       if (!scopeRun.materializable || scopeRun.beginBoundary < 0 ||
           scopeRun.endBoundary <= scopeRun.beginBoundary ||
-          scopeRun.candidateStageIndices.empty())
+          scopeRun.stageIndices.empty())
         return llvm::createStringError(
             std::errc::invalid_argument,
             "StageMaterializationPlan received an illegal Scope Run");
@@ -728,11 +620,11 @@ mlir::ascend::buildStageMaterializationPlan(
       range.beginBoundary = static_cast<size_t>(scopeRun.beginBoundary);
       range.endBoundary = static_cast<size_t>(scopeRun.endBoundary);
       range.superblockFactor = scopeRun.superblockFactor;
-      for (size_t stageIndex : scopeRun.candidateStageIndices) {
+      for (size_t stageIndex : scopeRun.stageIndices) {
         if (stageIndex >= stageModel.stages.size())
           return llvm::createStringError(
               std::errc::invalid_argument,
-              "Scope Run references an invalid candidate Stage");
+              "Scope Run references an invalid Stage");
         llvm::append_range(range.operations,
                            stageModel.stages[stageIndex].operations);
       }
@@ -753,14 +645,13 @@ mlir::ascend::buildStageMaterializationPlan(
     if (stageIndex >= stageModel.stages.size())
       return llvm::createStringError(
           std::errc::invalid_argument,
-          "StageMaterializationPlan references an invalid candidate Stage");
+          "StageMaterializationPlan references an invalid Stage");
     const LogicalStageCost &stage = stageModel.stages[stageIndex];
     if (!stage.localSimtMaterializable || stage.operations.empty() ||
         stage.beginBoundary < 0 || stage.endBoundary <= stage.beginBoundary)
       return llvm::createStringError(
           std::errc::invalid_argument,
-          "candidate Stage '%s' cannot become a local SIMT scope",
-          stage.id.c_str());
+          "Stage '%s' cannot become a local SIMT scope", stage.id.c_str());
 
     bool merge = !plan.ranges.empty() &&
                  plan.ranges.back().endBoundary ==

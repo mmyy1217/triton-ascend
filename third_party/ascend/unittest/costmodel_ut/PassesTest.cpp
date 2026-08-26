@@ -729,10 +729,10 @@ TEST(CostModelPassesTest, StageModelSnapshotIsSplitAndReadable) {
   expectJSONFile("summary.json");
   expectJSONFile("config.json");
   expectJSONFile("features.json");
-  expectJSONFile("semantic-units.json");
+  expectJSONFile("stages.json");
   expectJSONFile("dependence-graph.json");
   expectJSONFile("stage-boundary-graph.json");
-  expectJSONFile("candidates/index.json");
+  expectJSONFile("stages/index.json");
   expectJSONFile("routes.json");
   expectJSONFile("materialization-plan.json");
 
@@ -770,18 +770,17 @@ TEST(CostModelPassesTest, StageModelSnapshotIsSplitAndReadable) {
   EXPECT_TRUE(materialization.get("nominal_mixed_plan_available"));
   EXPECT_TRUE(materialization.get("nominal_mixed_plan"));
 
-  llvm::SmallString<256> candidateDirectory(snapshotPath);
-  llvm::sys::path::append(candidateDirectory, "candidates");
-  size_t candidateFileCount = 0;
-  llvm::sys::fs::directory_iterator candidateIterator(candidateDirectory,
-                                                      error);
+  llvm::SmallString<256> stageDirectory(snapshotPath);
+  llvm::sys::path::append(stageDirectory, "stages");
+  size_t stageFileCount = 0;
+  llvm::sys::fs::directory_iterator stageIterator(stageDirectory, error);
   ASSERT_FALSE(error);
-  for (; candidateIterator != end; candidateIterator.increment(error)) {
+  for (; stageIterator != end; stageIterator.increment(error)) {
     ASSERT_FALSE(error);
-    if (llvm::sys::path::filename(candidateIterator->path()) != "index.json")
-      ++candidateFileCount;
+    if (llvm::sys::path::filename(stageIterator->path()) != "index.json")
+      ++stageFileCount;
   }
-  EXPECT_GT(candidateFileCount, 0U);
+  EXPECT_GT(stageFileCount, 0U);
   EXPECT_FALSE(llvm::sys::fs::remove_directories(rootPath));
 }
 

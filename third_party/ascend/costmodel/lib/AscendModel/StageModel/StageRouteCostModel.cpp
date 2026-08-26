@@ -111,28 +111,26 @@ static ScopeRunCost buildScopeRun(const PartialRoute &route,
        ++position) {
     size_t stageIndex = route.stageIndices[position];
     if (stageIndex >= costTable.stages.size()) {
-      run.rejectionReason = "invalid_candidate_stage_index";
+      run.rejectionReason = "invalid_stage_index";
       return run;
     }
     const LogicalStageCost &stage = costTable.stages[stageIndex];
     if (position == beginPosition)
       run.beginBoundary = stage.beginBoundary;
     run.endBoundary = stage.endBoundary;
-    run.candidateStageIndices.push_back(stageIndex);
+    run.stageIndices.push_back(stageIndex);
     allStagesLocal &= stage.localSimtMaterializable;
     llvm::append_range(roots, stage.operations);
   }
   run.superblockFactor = route.routeSuperblockFactor;
   if (!allStagesLocal) {
-    run.rejectionReason = "candidate_stage_not_locally_materializable";
+    run.rejectionReason = "stage_not_locally_materializable";
     return run;
   }
 
   if (roots.empty()) {
-    const LogicalStageCost &first =
-        costTable.stages[run.candidateStageIndices.front()];
-    const LogicalStageCost &last =
-        costTable.stages[run.candidateStageIndices.back()];
+    const LogicalStageCost &first = costTable.stages[run.stageIndices.front()];
+    const LogicalStageCost &last = costTable.stages[run.stageIndices.back()];
     run.liveInCount = first.liveInCount;
     run.liveOutCount = last.liveOutCount;
     run.liveInTensorBytes = first.scopeInputTensorBytes;
@@ -280,21 +278,20 @@ solveBoundaryGraphRoutes(const StageCostTable &costTable,
           stage.endBoundary >= costTable.boundaryCount)
         return llvm::createStringError(
             std::errc::invalid_argument,
-            "candidate Stage '%s' has invalid boundary edge [%lld, %lld)",
+            "Stage '%s' has invalid boundary edge [%lld, %lld)",
             stage.id.c_str(), static_cast<long long>(stage.beginBoundary),
             static_cast<long long>(stage.endBoundary));
       if (stage.implementations.empty())
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "candidate Stage '%s' has no legal implementation",
-            stage.id.c_str());
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "Stage '%s' has no legal implementation",
+                                       stage.id.c_str());
       State &target = states[static_cast<size_t>(stage.endBoundary)];
 
       for (const StageImplementationCost &cost : stage.implementations) {
         if (!cost.isValid())
           return llvm::createStringError(
               std::errc::invalid_argument,
-              "candidate Stage '%s' has an invalid implementation cost",
+              "Stage '%s' has an invalid implementation cost",
               stage.id.c_str());
         if (boundary == 0) {
           PartialRoute route;
@@ -619,10 +616,10 @@ llvm::json::Object StageCostTable::toJSON() const {
   result["modeled_operation_count"] = modeledOperationCount;
   result["profile_version"] = profileVersion;
   result["boundary_count"] = boundaryCount;
-  llvm::json::Array candidates;
+  llvm::json::Array stageCosts;
   for (const LogicalStageCost &stage : stages)
-    candidates.push_back(stage.toJSON());
-  result["candidate_stages"] = std::move(candidates);
+    stageCosts.push_back(stage.toJSON());
+  result["stages"] = std::move(stageCosts);
   if (!discoveryJSON.empty()) {
     auto parsed = llvm::json::parse(discoveryJSON);
     if (parsed)
@@ -673,9 +670,9 @@ llvm::json::Object ScopeRunCost::toJSON() const {
   result["end_boundary"] = endBoundary;
   result["superblock_factor"] = superblockFactor;
   llvm::json::Array stages;
-  for (size_t index : candidateStageIndices)
+  for (size_t index : stageIndices)
     stages.push_back(static_cast<int64_t>(index));
-  result["candidate_stage_indices"] = std::move(stages);
+  result["stage_indices"] = std::move(stages);
   result["live_in_count"] = liveInCount;
   result["live_out_count"] = liveOutCount;
   result["live_in_tensor_bytes"] = liveInTensorBytes;
@@ -700,7 +697,7 @@ llvm::json::Object StageRoutePlan::toJSON() const {
   for (size_t i = 0; i < implementations.size(); ++i) {
     llvm::json::Object stage;
     if (i < stageIndices.size())
-      stage["candidate_stage_index"] = static_cast<int64_t>(stageIndices[i]);
+      stage["stage_index"] = static_cast<int64_t>(stageIndices[i]);
     stage["implementation"] = implementations[i].toJSON();
     stage["entry_transition_system_cycles"] = entryTransitionCycles[i];
     stage["logical_stage_system_cycles"] = logicalStageCycles[i];

@@ -30,7 +30,7 @@ struct StageDependenceEdge {
   llvm::json::Object toJSON() const;
 };
 
-struct StageSemanticUnit {
+struct StageUnit {
   size_t index = 0;
   Operation *operation = nullptr;
   bool anchorEvidence = false;
@@ -41,7 +41,7 @@ struct StageSemanticUnit {
 };
 
 struct StageDependenceGraph {
-  std::vector<StageSemanticUnit> units;
+  std::vector<StageUnit> stages;
   std::vector<StageDependenceEdge> edges;
   std::vector<bool> cuttableBoundaries;
 
@@ -49,11 +49,10 @@ struct StageDependenceGraph {
   llvm::json::Object toJSON() const;
 };
 
-struct CandidateStage {
+struct DiscoveredStage {
   size_t index = 0;
   size_t beginBoundary = 0;
   size_t endBoundary = 0;
-  bool fallback = false;
   std::vector<std::string> evidence;
   std::string localSimtRejectionReason;
   LogicalStage stage;
@@ -61,7 +60,7 @@ struct CandidateStage {
   llvm::json::Object toJSON() const;
 };
 
-struct RejectedCandidateStage {
+struct RejectedStage {
   size_t beginBoundary = 0;
   size_t endBoundary = 0;
   std::string reason;
@@ -72,17 +71,17 @@ struct RejectedCandidateStage {
 struct StageBoundaryGraph {
   std::string boundarySource = "stage_boundary_graph";
   StageDependenceGraph dependenceGraph;
-  std::vector<CandidateStage> candidates;
-  std::vector<RejectedCandidateStage> rejectedCandidates;
+  std::vector<DiscoveredStage> stages;
+  std::vector<RejectedStage> rejectedStages;
 
-  size_t boundaryCount() const { return dependenceGraph.units.size() + 1; }
+  size_t boundaryCount() const { return dependenceGraph.stages.size() + 1; }
   llvm::json::Object toJSON() const;
 };
 
 struct StageDiscoveryOptions {
   int64_t tinyDotFlopsMax = 16384;
   int64_t maximumSuperblockFactor = 1;
-  size_t maximumCandidateCount = 1024;
+  size_t maximumStageCount = 1024;
 };
 
 class StageDependenceAnalysis {

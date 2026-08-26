@@ -90,13 +90,13 @@ llvm::Expected<StageCostTable>
 evaluateOneStage(LogicalStage stage,
                  HardwareProfile profile = hardwareProfile()) {
   mlir::ascend::StageBoundaryGraph graph;
-  graph.dependenceGraph.units.resize(1);
+  graph.dependenceGraph.stages.resize(1);
   graph.dependenceGraph.cuttableBoundaries = {true, true};
-  mlir::ascend::CandidateStage candidate;
-  candidate.beginBoundary = 0;
-  candidate.endBoundary = 1;
-  candidate.stage = std::move(stage);
-  graph.candidates.push_back(std::move(candidate));
+  mlir::ascend::DiscoveredStage discovered;
+  discovered.beginBoundary = 0;
+  discovered.endBoundary = 1;
+  discovered.stage = std::move(stage);
+  graph.stages.push_back(std::move(discovered));
   return StageCostEvaluator().evaluate(graph, profile);
 }
 
@@ -169,7 +169,7 @@ TEST(SimdSimtCostModelTest, KernelMixedRouteComesFromAdjacentStageModes) {
   EXPECT_EQ(result->mixed.implementations[2].mode, StageMode::SIMD);
 }
 
-TEST(SimdSimtCostModelTest, BoundaryGraphRouteChoosesPartitionAndModeTogether) {
+TEST(SimdSimtCostModelTest, BoundaryGraphRouteUsesEveryStageExactlyOnce) {
   StageCostTable table;
   table.boundarySource = "stage_boundary_graph";
   table.profileVersion = "unit_test";
@@ -190,25 +190,20 @@ TEST(SimdSimtCostModelTest, BoundaryGraphRouteChoosesPartitionAndModeTogether) {
     stage.description = stage.id;
     stage.beginBoundary = begin;
     stage.endBoundary = end;
-    stage.localSimtMaterializable = end - begin < 2;
-    stage.localSimtFactors = stage.localSimtMaterializable
-                                 ? std::vector<int64_t>{1}
-                                 : std::vector<int64_t>{};
+    stage.localSimtMaterializable = true;
+    stage.localSimtFactors = {1};
     stage.implementations = {makeCost(StageMode::SIMD, simd),
                              makeCost(StageMode::SIMT, simt)};
     return stage;
   };
-  table.stages = {
-      makeStage("whole", 0, 2, 100.0, 100.0),
-      makeStage("scalar_prefix", 0, 1, 50.0, 5.0),
-      makeStage("copy_loop", 1, 2, 5.0, 50.0),
-  };
+  table.stages = {makeStage("scalar_prefix", 0, 1, 50.0, 5.0),
+                  makeStage("copy_loop", 1, 2, 5.0, 50.0)};
 
   auto result = solveStageRoutes(table, StageTransitionCost{});
   if (!result)
     FAIL() << llvm::toString(result.takeError());
   ASSERT_TRUE(result->mixed.legal);
-  EXPECT_EQ(result->mixed.stageIndices, std::vector<size_t>({1, 2}));
+  EXPECT_EQ(result->mixed.stageIndices, std::vector<size_t>({0, 1}));
   ASSERT_EQ(result->mixed.implementations.size(), 2u);
   EXPECT_EQ(result->mixed.implementations[0].mode, StageMode::SIMT);
   EXPECT_EQ(result->mixed.implementations[1].mode, StageMode::SIMD);
@@ -463,7 +458,7 @@ TEST(SimdSimtCostModelTest, MixedRouteRejectsUnmaterializableSimtStage) {
   EXPECT_FALSE(routes->mixed.legal);
 }
 
-TEST(SimdSimtCostModelTest, MixedRouteChargesOneMergedCandidateScope) {
+TEST(SimdSimtCostModelTest, MixedRouteChargesOneMergedStageScope) {
   StageCostTable table;
   table.profileVersion = "unit-test-profile-v1";
   auto makeCost = [&](StageMode mode, double cycles) {
@@ -707,7 +702,7 @@ TEST(SimdSimtCostModelTest, MixedScopeSuperBlockUsesSelectedFactorCost) {
 }
 
 TEST(SimdSimtCostModelTest,
-     GenericStageDiscoveryFindsPaddedCopyBoundaryCandidates) {
+     GenericStageDiscoveryBuildsOneStagePerSemanticUnit) {
   mlir::MLIRContext context;
   context.getOrLoadDialect<mlir::arith::ArithDialect>();
   context.getOrLoadDialect<mlir::func::FuncDialect>();
@@ -750,38 +745,35 @@ TEST(SimdSimtCostModelTest,
   auto graph = StageDiscovery().discover(*module, anchorPlan, options);
   if (!graph)
     FAIL() << llvm::toString(graph.takeError());
-  ASSERT_GT(graph->dependenceGraph.units.size(), 2u);
-  EXPECT_EQ(graph->boundaryCount(), graph->dependenceGraph.units.size() + 1);
+  ASSERT_GT(graph->dependenceGraph.stages.size(), 2u);
+  EXPECT_EQ(graph->boundaryCount(), graph->dependenceGraph.stages.size() + 1);
+  ASSERT_EQ(graph->stages.size(), graph->dependenceGraph.stages.size());
   EXPECT_FALSE(graph->dependenceGraph.edges.empty());
 
-  size_t copyBegin = graph->dependenceGraph.units.size();
-  for (const auto &unit : graph->dependenceGraph.units)
-    if (unit.operation->getName().getStringRef() == "tt.make_range")
-      copyBegin = unit.index;
-  ASSERT_LT(copyBegin, graph->dependenceGraph.units.size());
-
-  const mlir::ascend::CandidateStage *prefix = nullptr;
-  const mlir::ascend::CandidateStage *copy = nullptr;
-  const mlir::ascend::CandidateStage *whole = nullptr;
-  for (const auto &candidate : graph->candidates) {
-    if (candidate.beginBoundary == 0 &&
-        candidate.endBoundary == graph->dependenceGraph.units.size())
-      whole = &candidate;
-    if (candidate.beginBoundary == 0 && candidate.endBoundary == copyBegin)
-      prefix = &candidate;
-    if (candidate.beginBoundary == copyBegin &&
-        candidate.endBoundary == graph->dependenceGraph.units.size())
-      copy = &candidate;
+  const mlir::ascend::DiscoveredStage *control = nullptr;
+  const mlir::ascend::DiscoveredStage *vectorLoad = nullptr;
+  for (auto [index, stage] : llvm::enumerate(graph->stages)) {
+    EXPECT_EQ(stage.beginBoundary, index);
+    EXPECT_EQ(stage.endBoundary, index + 1);
+    ASSERT_EQ(stage.stage.operations.size(), 1u);
+    EXPECT_EQ(stage.stage.operations.front(),
+              graph->dependenceGraph.stages[index].operation);
+    if (stage.stage.simtLegal)
+      EXPECT_EQ(stage.stage.legalSimtFactors, std::vector<int64_t>({1, 2, 4}));
+    mlir::Operation *operation = stage.stage.operations.front();
+    if (operation->getName().getStringRef() == "scf.if")
+      control = &stage;
+    if (operation->getName().getStringRef() == "tt.load" &&
+        llvm::isa<mlir::ShapedType>(operation->getResult(0).getType()))
+      vectorLoad = &stage;
   }
-  ASSERT_NE(prefix, nullptr);
-  ASSERT_NE(copy, nullptr);
-  ASSERT_NE(whole, nullptr);
-  EXPECT_EQ(prefix->stage.costModelKind, StageCostModelKind::ScalarControl);
-  EXPECT_EQ(copy->stage.costModelKind,
+  ASSERT_NE(control, nullptr);
+  ASSERT_NE(vectorLoad, nullptr);
+  EXPECT_EQ(control->stage.costModelKind, StageCostModelKind::ScalarControl);
+  EXPECT_EQ(vectorLoad->stage.costModelKind,
             StageCostModelKind::ContinuousTileMemory);
-  EXPECT_TRUE(prefix->stage.localSimtMaterializable);
-  EXPECT_TRUE(copy->stage.localSimtMaterializable);
-  EXPECT_EQ(whole->stage.legalSimtFactors, std::vector<int64_t>({1, 2, 4}));
+  EXPECT_TRUE(control->stage.localSimtMaterializable);
+  EXPECT_TRUE(vectorLoad->stage.localSimtMaterializable);
 }
 
 TEST(SimdSimtCostModelTest,
@@ -932,24 +924,17 @@ TEST(SimdSimtCostModelTest, ScalarSelectedRowCopyLoopRemainsContiguous) {
   if (!graph)
     FAIL() << llvm::toString(graph.takeError());
 
-  size_t copyBegin = graph->dependenceGraph.units.size();
-  for (const auto &unit : graph->dependenceGraph.units)
-    if (unit.operation->getName().getStringRef() == "tt.make_range")
-      copyBegin = unit.index;
-  ASSERT_LT(copyBegin, graph->dependenceGraph.units.size());
-
-  const mlir::ascend::CandidateStage *copy = nullptr;
-  for (const auto &candidate : graph->candidates)
-    if (candidate.beginBoundary == copyBegin &&
-        candidate.endBoundary == graph->dependenceGraph.units.size())
-      copy = &candidate;
-  ASSERT_NE(copy, nullptr);
-  EXPECT_EQ(copy->stage.costModelKind,
+  const mlir::ascend::DiscoveredStage *loop = nullptr;
+  for (const auto &stage : graph->stages)
+    if (stage.stage.operations.front()->getName().getStringRef() == "scf.for")
+      loop = &stage;
+  ASSERT_NE(loop, nullptr);
+  EXPECT_EQ(loop->stage.costModelKind,
             StageCostModelKind::ContinuousTileMemory);
-  EXPECT_TRUE(copy->stage.features.hasPointerInduction);
-  EXPECT_FALSE(copy->stage.features.hasLoopCarriedDataDependency);
-  EXPECT_FALSE(copy->stage.features.hasIndirectMemory);
-  EXPECT_TRUE(copy->stage.features.hasContiguousMemory);
+  EXPECT_TRUE(loop->stage.features.hasPointerInduction);
+  EXPECT_FALSE(loop->stage.features.hasLoopCarriedDataDependency);
+  EXPECT_FALSE(loop->stage.features.hasIndirectMemory);
+  EXPECT_TRUE(loop->stage.features.hasContiguousMemory);
 }
 
 TEST(SimdSimtCostModelTest, IncompatibleDominantStructuresRequireStageSplit) {

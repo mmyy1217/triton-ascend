@@ -263,7 +263,7 @@ struct SimdSimtCostModelOptions {
 };
 
 struct SimdSimtCostReport {
-  int64_t schemaVersion = 16;
+  int64_t schemaVersion = 17;
   std::string model = "ascend_stage_model_v1_cpp";
   std::string profileVersion;
   std::string profileTarget;

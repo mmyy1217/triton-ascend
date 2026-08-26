@@ -202,7 +202,7 @@ struct ScopeRunCost {
   int64_t beginBoundary = -1;
   int64_t endBoundary = -1;
   int64_t superblockFactor = 1;
-  std::vector<size_t> candidateStageIndices;
+  std::vector<size_t> stageIndices;
   int64_t liveInCount = 0;
   int64_t liveOutCount = 0;
   int64_t liveInTensorBytes = 0;
