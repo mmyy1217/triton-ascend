@@ -750,6 +750,26 @@ TEST(CostModelPassesTest, StageModelSnapshotIsSplitAndReadable) {
   EXPECT_EQ(*logicalProgramCount, 9);
   EXPECT_TRUE(configObject->getObject("route_transform_capability"));
 
+  auto readJSONObject = [&](llvm::StringRef relativePath) {
+    llvm::SmallString<256> path(snapshotPath);
+    llvm::sys::path::append(path, relativePath);
+    auto buffer = llvm::MemoryBuffer::getFile(path);
+    EXPECT_TRUE(static_cast<bool>(buffer));
+    if (!buffer)
+      return llvm::json::Object();
+    auto parsed = llvm::json::parse(buffer.get()->getBuffer());
+    EXPECT_TRUE(static_cast<bool>(parsed));
+    if (!parsed || !parsed->getAsObject())
+      return llvm::json::Object();
+    return std::move(*parsed->getAsObject());
+  };
+  llvm::json::Object routes = readJSONObject("routes.json");
+  EXPECT_TRUE(routes.getObject("mixed_simd_simt_conservative"));
+  llvm::json::Object materialization =
+      readJSONObject("materialization-plan.json");
+  EXPECT_TRUE(materialization.get("nominal_mixed_plan_available"));
+  EXPECT_TRUE(materialization.get("nominal_mixed_plan"));
+
   llvm::SmallString<256> candidateDirectory(snapshotPath);
   llvm::sys::path::append(candidateDirectory, "candidates");
   size_t candidateFileCount = 0;
@@ -797,8 +817,8 @@ module attributes {
   ASSERT_TRUE(scopeOp->getAttrOfType<StringAttr>("vector_mode"));
   EXPECT_EQ(scopeOp->getAttrOfType<StringAttr>("vector_mode").getValue(),
             "simt");
-  auto factor =
-      scopeOp->getAttrOfType<mlir::IntegerAttr>("ascend.scope_superblock.factor");
+  auto factor = scopeOp->getAttrOfType<mlir::IntegerAttr>(
+      "ascend.scope_superblock.factor");
   ASSERT_TRUE(factor);
   EXPECT_EQ(factor.getInt(), 1);
 

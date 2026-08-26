@@ -239,7 +239,8 @@ static llvm::Error writeStageModelSnapshot(
     llvm::StringRef effective, llvm::StringRef selectionSource,
     llvm::StringRef applicationReason, bool actionSupported,
     int64_t selectedSuperblockFactor, int64_t materializedAnchorCount,
-    const std::optional<StageMaterializationPlan> &materializationPlan) {
+    const std::optional<StageMaterializationPlan> &materializationPlan,
+    const std::optional<StageMaterializationPlan> &nominalMixedPlan) {
   if (rootPath.empty())
     return llvm::Error::success();
 
@@ -471,6 +472,8 @@ static llvm::Error writeStageModelSnapshot(
   routes["all_simd"] = report.stageModel.allSimd.toJSON();
   routes["all_simt_only"] = report.stageModel.allSimt.toJSON();
   routes["mixed_simd_simt"] = report.stageModel.mixed.toJSON();
+  routes["mixed_simd_simt_conservative"] =
+      report.stageModel.conservativeMixed.toJSON();
   routes["selected_route"] = recommended;
   if (auto error = writePrettyJSON(childPath(snapshotPath, "routes.json"),
                                    std::move(routes)))
@@ -484,6 +487,11 @@ static llvm::Error writeStageModelSnapshot(
   materialization["plan"] =
       materializationPlan ? llvm::json::Value(materializationPlan->toJSON())
                           : llvm::json::Value(llvm::json::Object());
+  materialization["nominal_mixed_plan_available"] =
+      nominalMixedPlan.has_value();
+  materialization["nominal_mixed_plan"] =
+      nominalMixedPlan ? llvm::json::Value(nominalMixedPlan->toJSON())
+                       : llvm::json::Value(llvm::json::Object());
   if (auto error =
           writePrettyJSON(childPath(snapshotPath, "materialization-plan.json"),
                           std::move(materialization)))
@@ -556,6 +564,15 @@ struct SelectSimdSimtCostModelPass
     SmallVector<Operation *> mixedAnchors;
     SimtAnchorPlan selectedMixedAnchorPlan;
     std::optional<StageMaterializationPlan> selectedStagePlan;
+    std::optional<StageMaterializationPlan> nominalMixedStagePlan;
+    if (report.stageModel.boundarySource == "stage_boundary_graph" &&
+        report.stageModel.mixed.legal) {
+      auto plan = buildStageMaterializationPlan(report.stageModel);
+      if (plan)
+        nominalMixedStagePlan = std::move(*plan);
+      else
+        llvm::consumeError(plan.takeError());
+    }
     int64_t selectedSuperblockFactor = 1;
     if (report.stageModel.applied) {
       if (report.decision == SimdSimtCandidateKind::AllSIMD)
@@ -576,13 +593,11 @@ struct SelectSimdSimtCostModelPass
         actionSupported = false;
         applicationReason = "explicit_scope_present";
       } else if (report.stageModel.boundarySource == "stage_boundary_graph") {
-        auto plan = buildStageMaterializationPlan(report.stageModel);
-        if (!plan) {
-          llvm::consumeError(plan.takeError());
+        if (!nominalMixedStagePlan) {
           actionSupported = false;
           applicationReason = "no_materializable_mixed_stage_plan";
         } else {
-          selectedStagePlan = std::move(*plan);
+          selectedStagePlan = nominalMixedStagePlan;
           selectedMixedAnchorPlan =
               buildSelectedMixedAnchorPlan(report.stageModel, anchorPlan);
           mixedAnchors = selectedMixedAnchorPlan.materializableRoots();
@@ -695,6 +710,9 @@ struct SelectSimdSimtCostModelPass
             : 0;
     if (selectedStagePlan)
       reportJSON["stage_materialization_plan"] = selectedStagePlan->toJSON();
+    if (nominalMixedStagePlan)
+      reportJSON["nominal_mixed_stage_materialization_plan"] =
+          nominalMixedStagePlan->toJSON();
     reportJSON["selected_superblock_factor"] = selectedSuperblockFactor;
     reportJSON["logical_program_count_hint"] = options.logicalProgramCountHint;
     if (options.logicalProgramCountHint > 0) {
@@ -713,7 +731,8 @@ struct SelectSimdSimtCostModelPass
             reportFile.getValue(), module, ttirSha256, mode.getValue(), options,
             report, recommended, effective, selectionSource, applicationReason,
             actionSupported, selectedSuperblockFactor,
-            static_cast<int64_t>(mixedAnchors.size()), selectedStagePlan))
+            static_cast<int64_t>(mixedAnchors.size()), selectedStagePlan,
+            nominalMixedStagePlan))
       module.emitWarning("StageModel snapshot dump failed for `")
           << reportFile.getValue() << "`: " << llvm::toString(std::move(error));
   }
