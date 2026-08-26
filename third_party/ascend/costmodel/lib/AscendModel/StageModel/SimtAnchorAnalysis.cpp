@@ -1,6 +1,6 @@
 //===- SimtAnchorAnalysis.cpp - Materializable SIMT anchors --------------===//
 
-#include "AscendModel/RouteModel/SimtAnchorAnalysis.h"
+#include "AscendModel/StageModel/SimtAnchorAnalysis.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"

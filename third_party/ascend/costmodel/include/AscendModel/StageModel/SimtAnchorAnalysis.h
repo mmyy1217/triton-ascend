@@ -1,13 +1,13 @@
 //===- SimtAnchorAnalysis.h - Materializable SIMT anchors -------*- C++ -*-===//
 //
-// Shared TTIR pattern matching for the Route Model and scope materializer.
+// Shared TTIR pattern matching for the StageModel and scope materializer.
 // Keeping this contract in one place guarantees that mixed-candidate costs
 // describe the same operations that the selector can actually mark for SIMT.
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ASCENDMODEL_ROUTEMODEL_SIMTANCHORANALYSIS_H
-#define ASCENDMODEL_ROUTEMODEL_SIMTANCHORANALYSIS_H
+#ifndef ASCENDMODEL_STAGEMODEL_SIMTANCHORANALYSIS_H
+#define ASCENDMODEL_STAGEMODEL_SIMTANCHORANALYSIS_H
 
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/SmallVector.h"
@@ -166,4 +166,4 @@ llvm::SmallVector<Operation *> collectMixedSimtAnchors(ModuleOp module,
 } // namespace ascend
 } // namespace mlir
 
-#endif // ASCENDMODEL_ROUTEMODEL_SIMTANCHORANALYSIS_H
+#endif // ASCENDMODEL_STAGEMODEL_SIMTANCHORANALYSIS_H

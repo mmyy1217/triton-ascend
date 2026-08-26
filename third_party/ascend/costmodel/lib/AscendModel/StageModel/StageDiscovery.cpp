@@ -1,8 +1,8 @@
 //===- StageDiscovery.cpp - Generic Stage boundary discovery ------------===//
 
-#include "AscendModel/RouteModel/StageDiscovery.h"
+#include "AscendModel/StageModel/StageDiscovery.h"
 
-#include "AscendModel/RouteModel/StagePartitioner.h"
+#include "AscendModel/StageModel/StageAnalysis.h"
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
@@ -300,26 +300,12 @@ static void refineGenericKind(LogicalStage &stage) {
 
 static llvm::Error analyzeCandidate(LogicalStage &stage,
                                     int64_t tinyDotFlopsMax) {
-  StagePartition scratch;
-  scratch.domain = "generic_stage_candidate";
-  scratch.boundarySource = "stage_boundary_graph";
-  scratch.operationOwnershipComplete = true;
-  scratch.modeledOperationCount = static_cast<int64_t>(stage.operations.size());
-  LogicalPhase phase;
-  phase.id = "candidate";
-  phase.description = "candidate";
-  phase.stages.push_back(stage);
-  scratch.phases.push_back(std::move(phase));
-  if (llvm::Error error = StageWorkloadAnalysis().analyze(scratch))
+  if (llvm::Error error = StageWorkloadAnalysis().analyze(stage))
     return error;
-  if (llvm::Error error = StageFeatureAnalysis().analyze(scratch))
+  if (llvm::Error error = StageFeatureAnalysis().analyze(stage))
     return error;
-  if (llvm::Error error =
-          StageKindClassifier().analyze(scratch, tinyDotFlopsMax)) {
-    stage = std::move(scratch.phases.front().stages.front());
+  if (llvm::Error error = StageKindClassifier().analyze(stage, tinyDotFlopsMax))
     return error;
-  }
-  stage = std::move(scratch.phases.front().stages.front());
   refineGenericKind(stage);
   return llvm::Error::success();
 }
@@ -430,7 +416,6 @@ llvm::json::Object RejectedCandidateStage::toJSON() const {
 
 llvm::json::Object StageBoundaryGraph::toJSON() const {
   llvm::json::Object result;
-  result["domain"] = domain;
   result["boundary_source"] = boundarySource;
   result["boundary_count"] = static_cast<int64_t>(boundaryCount());
   result["dependence_graph"] = dependenceGraph.toJSON();

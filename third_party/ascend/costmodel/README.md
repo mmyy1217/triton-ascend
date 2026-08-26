@@ -9,7 +9,7 @@ profiles/microbench
 AscendModelProfile
    |             |
    v             v
-AscendModelAnalysis      AscendModelRouteModel
+AscendModelAnalysis      AscendModelStageModel
 (absolute/HIVM)          (SIMD/SIMT routing)
           \               /
            v             v
@@ -24,8 +24,8 @@ The two models share measurements, not objectives or scoring formulas:
 - `profiles/microbench`, `include/AscendModel/Profile`, and
   `lib/AscendModel/Profile` own model-neutral measurements plus their loader,
   units, clock domains, target checks, and provenance.
-- `profiles/simd_simt`, `include/AscendModel/RouteModel`, and
-  `lib/AscendModel/RouteModel` own SIMD/SIMT feature extraction, Coverage,
+- `profiles/simd_simt`, `include/AscendModel/StageModel`, and
+  `lib/AscendModel/StageModel` own SIMD/SIMT feature extraction, Coverage,
   conditional candidate scoring, post-score checks, selection reporting, and
   scope materialization.
 

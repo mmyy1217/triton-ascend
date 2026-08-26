@@ -5,11 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ASCENDMODEL_ROUTEMODEL_SIMDSIMTCOSTMODEL_H
-#define ASCENDMODEL_ROUTEMODEL_SIMDSIMTCOSTMODEL_H
+#ifndef ASCENDMODEL_STAGEMODEL_SIMDSIMTCOSTMODEL_H
+#define ASCENDMODEL_STAGEMODEL_SIMDSIMTCOSTMODEL_H
 
-#include "AscendModel/RouteModel/SimtAnchorAnalysis.h"
-#include "AscendModel/RouteModel/StageRouteCostModel.h"
+#include "AscendModel/StageModel/SimtAnchorAnalysis.h"
+#include "AscendModel/StageModel/StageRouteCostModel.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Error.h"
@@ -239,74 +239,9 @@ struct SimdSimtCandidateScores {
   llvm::json::Object toJSON() const;
 };
 
-/// Detailed values retained so the JSON report can explain every major term
-/// in the versioned analytical and structural formulas.
-struct SimdSimtCostBreakdown {
-  llvm::StringMap<double> simdOpSystemCycles;
-  llvm::StringMap<double> simtOpSystemCycles;
-  llvm::StringMap<double> structuralComponents;
-
-  double simdComputeCycles = 0.0;
-  double simtComputeCycles = 0.0;
-  double simdDotCycles = 0.0;
-  double simtDotCycles = 0.0;
-  double simdLoadCycles = 0.0;
-  double simdStoreCycles = 0.0;
-  double simdMemoryCycles = 0.0;
-  double simtLoadCycles = 0.0;
-  double simtStoreCycles = 0.0;
-  double simtMemoryCycles = 0.0;
-  double simtShuffleInstructions = 0.0;
-  double simtShuffleCycles = 0.0;
-  double simtPredicateInstructions = 0.0;
-  double simtPredicateCycles = 0.0;
-  double simdSetupCycles = 0.0;
-  double simtSetupCycles = 0.0;
-  double simdIssuePayloadCycles = 0.0;
-  double simtIssuePayloadCycles = 0.0;
-  double simdAnalyticalCycles = 0.0;
-  double simtAnalyticalCycles = 0.0;
-  double programIssueScale = 1.0;
-
-  double mixedSimdRegularComputeCycles = 0.0;
-  double mixedSimdRegularDotCycles = 0.0;
-  double mixedSimdRegularMemoryCycles = 0.0;
-  double mixedSimdRegularPayloadCycles = 0.0;
-  double mixedSimtAnchorComputeCycles = 0.0;
-  double mixedSimtAnchorDotCycles = 0.0;
-  double mixedSimtAnchorMemoryCycles = 0.0;
-  double mixedSimtAnchorShuffleCycles = 0.0;
-  double mixedSimtAnchorPredicateCycles = 0.0;
-  double mixedSimtAnchorPayloadCycles = 0.0;
-  double mixedSimtAnchorCalibratedPayloadCycles = 0.0;
-  int64_t cubeTailDotOps = 0;
-  int64_t cubeTailDotFlops = 0;
-  double mixedBoundaryCycles = 0.0;
-  double mixedRemainingStructuralPenaltyRatio = 0.0;
-
-  double irregularDensity = 0.0;
-  double tinyDotUnderfill = 0.0;
-  double structuralPenaltyRatio = 0.0;
-  /// SIMD-only residual cost for structures omitted by its compute/memory
-  /// roofline. It must not depend on the cost of another route candidate.
-  double simdStructuralPenaltyCycles = 0.0;
-
-  double mixedSimdFraction = 0.0;
-  /// Conservative low-confidence setup fallback for a mixed plan.  The
-  /// current source is a standalone empty-VF harness, not a measured
-  /// directional SIMD/SIMT transition.
-  double mixedSetupFallbackCycles = 0.0;
-  double standaloneSimtSetupCycles = 0.0;
-  double setupProxyDeltaCycles = 0.0;
-  int64_t mixedSetupFallbackNumWarps = 0;
-  std::string mixedCostSource;
-
-  llvm::json::Object toJSON(const SimdSimtFeatureSummary &features) const;
-};
-
 struct SimdSimtCostModelOptions {
   /// Empty selects TRITON_ASCEND_SIMD_SIMT_PROFILE, then the source-tree
-  /// profile compiled into AscendModelRouteModel.
+  /// profile compiled into AscendModelStageModel.
   std::string profilePath;
   std::string actualTarget;
   unsigned numWarps = 32;
@@ -324,8 +259,8 @@ struct SimdSimtCostModelOptions {
 };
 
 struct SimdSimtCostReport {
-  int64_t schemaVersion = 14;
-  std::string model = "ascend_stage_route_cost_v3_cpp";
+  int64_t schemaVersion = 15;
+  std::string model = "ascend_stage_model_v1_cpp";
   std::string profileVersion;
   std::string profileTarget;
   std::string actualTarget;
@@ -350,7 +285,6 @@ struct SimdSimtCostReport {
   SimtApplicabilityResult applicability;
 
   SimdSimtFeatureSummary features;
-  SimdSimtCostBreakdown breakdown;
   StageCostModelSummary stageModel;
   bool includeFeaturesInJSON = true;
 
@@ -373,14 +307,6 @@ llvm::Expected<SimdSimtFeatureSummary>
 analyzeSimdSimtFeatures(mlir::ModuleOp module,
                         const SimtAnchorPlan &anchorPlan);
 
-/// Run the versioned profile formula on an already materialized feature
-/// summary.  Every structurally lowerable candidate is scored; policy-domain,
-/// confidence, Event-validation, and gain-margin admission are deliberately
-/// absent from the online model.
-llvm::Expected<SimdSimtCostReport>
-estimateSimdSimtCandidates(const SimdSimtFeatureSummary &features,
-                           const SimdSimtCostModelOptions &options = {});
-
 /// Analyze a ModuleOp and score all three candidates in one call.
 llvm::Expected<SimdSimtCostReport>
 analyzeSimdSimtCandidates(mlir::ModuleOp module,
@@ -394,4 +320,4 @@ analyzeSimdSimtCandidates(mlir::ModuleOp module,
 } // namespace ascend
 } // namespace mlir
 
-#endif // ASCENDMODEL_ROUTEMODEL_SIMDSIMTCOSTMODEL_H
+#endif // ASCENDMODEL_STAGEMODEL_SIMDSIMTCOSTMODEL_H

@@ -20,8 +20,8 @@
  * THE SOFTWARE.
  */
 
-#ifndef ASCENDMODEL_ROUTEMODEL_SIMTSELECTION_H
-#define ASCENDMODEL_ROUTEMODEL_SIMTSELECTION_H
+#ifndef ASCENDMODEL_STAGEMODEL_SIMTSELECTION_H
+#define ASCENDMODEL_STAGEMODEL_SIMTSELECTION_H
 
 #include "mlir/IR/Block.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -34,7 +34,7 @@ namespace mlir::ascend::simt_selection {
 
 inline constexpr llvm::StringLiteral kEffectiveExecutionAttr =
     "ascend.simt_costmodel.effective";
-// Use one spelling from the Python API through TTIR and Route Model lowering.
+// Use one spelling from the Python API through TTIR and StageModel lowering.
 inline constexpr llvm::StringLiteral kVectorModeAttr = "vector_mode";
 inline constexpr llvm::StringLiteral kLegacyVectorModeAttr = "vector_type";
 
@@ -206,4 +206,4 @@ inline int64_t inlineVoidSimtScopesForPureSimt(Operation *root) {
 
 } // namespace mlir::ascend::simt_selection
 
-#endif // ASCENDMODEL_ROUTEMODEL_SIMTSELECTION_H
+#endif // ASCENDMODEL_STAGEMODEL_SIMTSELECTION_H

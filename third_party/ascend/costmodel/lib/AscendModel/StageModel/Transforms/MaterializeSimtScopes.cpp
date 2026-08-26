@@ -7,9 +7,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "AscendModel/RouteModel/SimtAnchorAnalysis.h"
-#include "AscendModel/RouteModel/SimtSelection.h"
-#include "AscendModel/RouteModel/StageDiscovery.h"
+#include "AscendModel/StageModel/SimtAnchorAnalysis.h"
+#include "AscendModel/StageModel/SimtSelection.h"
+#include "AscendModel/StageModel/StageDiscovery.h"
 #include "AscendModel/Transforms/Passes.h"
 
 #include "mlir/IR/Builders.h"

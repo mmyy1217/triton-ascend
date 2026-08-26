@@ -23,7 +23,7 @@
 
 #include <cstdlib>
 
-#include "AscendModel/RouteModel/SimtSelection.h"
+#include "AscendModel/StageModel/SimtSelection.h"
 #include "TritonToLinalg/BlockPtrAnalysis.h"
 #include "ascend/include/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 #include "ascend/include/TritonToLinalg/ArgMinMaxConverter.h"

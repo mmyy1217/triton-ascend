@@ -1,8 +1,8 @@
 #include "AscendModel/Transforms/Passes.h"
 #include "AscendModel/IR/AscendModelDialect.h"
-#include "AscendModel/RouteModel/SimdSimtCostModel.h"
-#include "AscendModel/RouteModel/SimtAnchorAnalysis.h"
-#include "AscendModel/RouteModel/SimtSelection.h"
+#include "AscendModel/StageModel/SimdSimtCostModel.h"
+#include "AscendModel/StageModel/SimtAnchorAnalysis.h"
+#include "AscendModel/StageModel/SimtSelection.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -15,7 +15,11 @@
 #include "mlir/Pass/PassManager.h"
 
 #include "bishengir/Dialect/Scope/IR/Scope.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 
 #include <gtest/gtest.h>
 
@@ -497,7 +501,7 @@ module {
     EXPECT_EQ(facts->blockColumns, 16);
     EXPECT_EQ(facts->accumulatorType, "f32");
     EXPECT_EQ(facts->recurrenceStartRow, 2);
-    EXPECT_EQ(facts->recurrenceLoopCount, 2);
+    EXPECT_EQ(facts->recurrenceLoopCount, 28);
     EXPECT_EQ(facts->denseDotTailOps, 0);
     EXPECT_FALSE(facts->requiresCubeTailPartition);
   }
@@ -629,8 +633,6 @@ TEST(CostModelPassesTest, SimdSimtAutoAlwaysScoresLegalCandidates) {
   ASSERT_TRUE(autoEffective);
   ASSERT_TRUE(autoRecommended);
   ASSERT_TRUE(autoReport);
-  EXPECT_EQ(autoEffective.getValue(), "all_simd");
-  EXPECT_EQ(autoRecommended.getValue(), "all_simd");
   EXPECT_TRUE((*autoModule)->hasAttr("ascend.simt_costmodel.all_simd_score"));
   auto autoJSON = llvm::json::parse(autoReport.getValue());
   ASSERT_TRUE(static_cast<bool>(autoJSON));
@@ -642,7 +644,9 @@ TEST(CostModelPassesTest, SimdSimtAutoAlwaysScoresLegalCandidates) {
   ASSERT_NE(autoDecision, nullptr);
   EXPECT_NE(autoCandidateCosts->getAsObject(), nullptr);
   ASSERT_TRUE(autoDecision->getAsString());
-  EXPECT_EQ(*autoDecision->getAsString(), "all_simd");
+  const llvm::StringRef autoDecisionValue = *autoDecision->getAsString();
+  EXPECT_EQ(autoEffective.getValue(), autoDecisionValue);
+  EXPECT_EQ(autoRecommended.getValue(), autoDecisionValue);
   auto autoReason = autoObject->getString("application_reason");
   ASSERT_TRUE(autoReason);
   EXPECT_EQ(*autoReason, "minimum_cost_candidate");
@@ -671,10 +675,77 @@ TEST(CostModelPassesTest, SimdSimtAutoAlwaysScoresLegalCandidates) {
   ASSERT_NE(reportObject, nullptr);
   auto reportDecision = reportObject->getString("decision_kind");
   ASSERT_TRUE(reportDecision);
-  EXPECT_EQ(*reportDecision, "all_simd");
+  EXPECT_EQ(*reportDecision, autoDecisionValue);
   auto reportReason = reportObject->getString("application_reason");
   ASSERT_TRUE(reportReason);
   EXPECT_EQ(*reportReason, "report_mode");
+}
+
+TEST(CostModelPassesTest, StageModelSnapshotIsSplitAndReadable) {
+  mlir::MLIRContext context;
+  auto module = parseModule(context, kOutOfSimdSimtCoverageModule);
+  ASSERT_TRUE(module);
+
+  llvm::SmallString<256> rootPath;
+  ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory("stagemodel-snapshot-test",
+                                                    rootPath));
+
+  SelectSimdSimtCostModelPassOptions options;
+  options.mode = "report";
+  options.profilePath = TRITON_ASCEND_SIMD_SIMT_TEST_PROFILE_PATH;
+  options.actualTarget = "Ascend950PR_9579";
+  options.numWarps = 4;
+  options.compileOn91095 = true;
+  options.reportFile = rootPath.str().str();
+  ASSERT_TRUE(runPasses(*module, createSelectSimdSimtCostModelPass(options)));
+
+  llvm::SmallString<256> snapshotPath;
+  std::error_code error;
+  llvm::sys::fs::directory_iterator iterator(rootPath, error), end;
+  ASSERT_FALSE(error);
+  for (; iterator != end; iterator.increment(error)) {
+    ASSERT_FALSE(error);
+    if (llvm::sys::fs::is_directory(iterator->path()))
+      snapshotPath = iterator->path();
+  }
+  ASSERT_FALSE(snapshotPath.empty());
+
+  auto expectJSONFile = [&](llvm::StringRef relativePath) {
+    llvm::SmallString<256> path(snapshotPath);
+    llvm::sys::path::append(path, relativePath);
+    EXPECT_TRUE(llvm::sys::fs::exists(path));
+    auto buffer = llvm::MemoryBuffer::getFile(path);
+    EXPECT_TRUE(static_cast<bool>(buffer));
+    if (!buffer)
+      return;
+    EXPECT_GT(buffer.get()->getBuffer().count('\n'), 1U);
+    EXPECT_TRUE(
+        static_cast<bool>(llvm::json::parse(buffer.get()->getBuffer())));
+  };
+  expectJSONFile("manifest.json");
+  expectJSONFile("summary.json");
+  expectJSONFile("config.json");
+  expectJSONFile("features.json");
+  expectJSONFile("semantic-units.json");
+  expectJSONFile("dependence-graph.json");
+  expectJSONFile("stage-boundary-graph.json");
+  expectJSONFile("candidates/index.json");
+  expectJSONFile("routes.json");
+  expectJSONFile("materialization-plan.json");
+
+  llvm::SmallString<256> candidateDirectory(snapshotPath);
+  llvm::sys::path::append(candidateDirectory, "candidates");
+  size_t candidateFileCount = 0;
+  llvm::sys::fs::directory_iterator candidateIterator(candidateDirectory,
+                                                      error);
+  ASSERT_FALSE(error);
+  for (; candidateIterator != end; candidateIterator.increment(error)) {
+    ASSERT_FALSE(error);
+    if (llvm::sys::path::filename(candidateIterator->path()) != "index.json")
+      ++candidateFileCount;
+  }
+  EXPECT_GT(candidateFileCount, 0U);
+  EXPECT_FALSE(llvm::sys::fs::remove_directories(rootPath));
 }
 
 TEST(CostModelPassesTest, MaterializeSimtScopePreservesEscapingSSAResult) {

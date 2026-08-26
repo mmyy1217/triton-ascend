@@ -29,7 +29,7 @@
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
-#include "AscendModel/RouteModel/SimtSelection.h"
+#include "AscendModel/StageModel/SimtSelection.h"
 #include "ascend/include/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 #include "bishengir/Dialect/Annotation/IR/Annotation.h"
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"

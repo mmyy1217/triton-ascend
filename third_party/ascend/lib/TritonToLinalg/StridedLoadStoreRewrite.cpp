@@ -21,7 +21,7 @@
  */
 
 #include "TritonToLinalg/StridedLoadStoreRewrite.h"
-#include "AscendModel/RouteModel/SimtSelection.h"
+#include "AscendModel/StageModel/SimtSelection.h"
 #include "TritonToLinalg/ImplicitPermute.h"
 #include "TritonToLinalg/MaskAnalysis.h"
 #include "TritonToStructured/PtrAnalysis.h"

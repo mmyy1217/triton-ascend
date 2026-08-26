@@ -39,7 +39,7 @@ def TTIRLayoutMerge : Pass<"ttir-layout-merge", "mlir::ModuleOp"> {
       Applies implicit-permute normalization, strided-axis coalescing,
       contiguous tile-chunk coalescing, and independent row coalescing while
       the IR is still TTIR.  The SIMD /
-      SIMT Route Model is scheduled after this pass so it observes the actual
+      SIMT StageModel is scheduled after this pass so it observes the actual
       merged tensor shapes and memory-access structure.
     }];
     let constructor = "triton::createTTIRLayoutMergePass()";

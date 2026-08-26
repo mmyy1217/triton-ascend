@@ -227,7 +227,7 @@ def SelectSimdSimtCostModelPass
            "Whether backend integration can materialize mixed F2/F4 with AutoBlockify V1">,
     Option<"reportFile", "report-file", "std::string",
            /*default=*/"\"\"",
-           "Optional JSONL path for the C++ selection report">
+           "Optional directory for split, readable StageModel snapshots">
   ];
 }
 

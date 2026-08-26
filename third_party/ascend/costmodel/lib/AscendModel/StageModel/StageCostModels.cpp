@@ -1,7 +1,7 @@
 //===- StageCostModels.cpp - Per-stage analytical models -----------------===//
 
-#include "AscendModel/RouteModel/StageCostModels.h"
-#include "AscendModel/RouteModel/StageDiscovery.h"
+#include "AscendModel/StageModel/StageCostModels.h"
+#include "AscendModel/StageModel/StageDiscovery.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
@@ -801,120 +801,82 @@ llvm::Error StageCostModelRegistry::verifyComplete() const {
   return llvm::Error::success();
 }
 
-llvm::Expected<StageCostTable>
-StageCostEvaluator::evaluate(const StagePartition &partition,
-                             const HardwareProfile &profile) const {
-  if (partition.domain.empty() || partition.phases.empty())
+static llvm::Expected<LogicalStageCost>
+evaluateStage(const LogicalStage &stage, const HardwareProfile &profile,
+              const StageCostModelRegistry &registry) {
+  if (stage.id.empty() || stage.iterationCount <= 0 ||
+      !stage.features.isValid() || !stage.workload.isFiniteAndNonNegative())
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "StagePartition requires a domain and at least one Phase");
-  if (!profile.isValid())
+        "Stage '%s' has invalid identity, iteration, features, or workload",
+        stage.id.c_str());
+  if (!stage.simdLegal && !stage.simtLegal)
     return llvm::createStringError(std::errc::invalid_argument,
-                                   "HardwareProfile is invalid");
-  if (llvm::Error error = registry.verifyComplete())
-    return std::move(error);
+                                   "Stage '%s' has no legal StageMode",
+                                   stage.id.c_str());
+  if (stage.simtLegal && stage.legalSimtFactors.empty())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "SIMT Stage '%s' has no legal SuperBlock factor", stage.id.c_str());
 
-  StageCostTable table;
-  table.domain = partition.domain;
-  table.boundarySource = partition.boundarySource;
-  table.operationOwnershipComplete = partition.operationOwnershipComplete;
-  table.modeledOperationCount = partition.modeledOperationCount;
-  table.profileVersion = profile.profileVersion;
-  llvm::StringSet<> stageIds;
+  LogicalStageCost logicalCost;
+  logicalCost.id = stage.id;
+  logicalCost.description = stage.description;
+  logicalCost.model = stringifyStageCostModel(stage.costModelKind).str();
+  logicalCost.schedule = stage.scheduleKind;
+  logicalCost.iterationCount = stage.iterationCount;
+  logicalCost.features = stage.features;
+  logicalCost.workload = stage.workload;
+  logicalCost.ownedOperationCount = static_cast<int64_t>(stage.operations.size());
+  logicalCost.liveInCount = static_cast<int64_t>(stage.liveIns.size());
+  logicalCost.liveOutCount = static_cast<int64_t>(stage.liveOuts.size());
+  logicalCost.liveInBytes = stage.liveInBytes;
+  logicalCost.liveOutBytes = stage.liveOutBytes;
+  logicalCost.localSimtScopeCount = stage.localSimtScopeCount;
+  logicalCost.scopeInputTensorBytes = stage.scopeInputTensorBytes;
+  logicalCost.scopeOutputTensorBytes = stage.scopeOutputTensorBytes;
+  logicalCost.simtAnchorIndices = stage.simtAnchorIndices;
+  logicalCost.localSimtMaterializable = stage.localSimtMaterializable;
+  logicalCost.localSimtFactors = stage.localSimtFactors;
+  logicalCost.operations = stage.operations;
 
-  for (const LogicalPhase &phase : partition.phases) {
-    if (phase.id.empty() || phase.stages.empty())
+  llvm::SmallVector<StageImplementation> implementations;
+  if (stage.simdLegal)
+    implementations.push_back({StageMode::SIMD, 1});
+  if (stage.simtLegal)
+    for (int64_t factor : stage.legalSimtFactors)
+      implementations.push_back({StageMode::SIMT, factor});
+
+  for (const StageImplementation &implementation : implementations) {
+    if (!isDeclaredLegal(stage, implementation))
       return llvm::createStringError(std::errc::invalid_argument,
-                                     "every Phase requires an id and Stage");
-    LogicalPhaseCost phaseCost;
-    phaseCost.id = phase.id;
-    phaseCost.description = phase.description;
-
-    for (const LogicalStage &stage : phase.stages) {
-      if (stage.id.empty() || !stageIds.insert(stage.id).second)
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "Stage ids must be non-empty and unique: '%s'", stage.id.c_str());
-      if (stage.iterationCount <= 0 || !stage.features.isValid() ||
-          !stage.workload.isFiniteAndNonNegative())
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "Stage '%s' has invalid iteration/features", stage.id.c_str());
-      if (!stage.simdLegal && !stage.simtLegal)
-        return llvm::createStringError(std::errc::invalid_argument,
-                                       "Stage '%s' has no legal StageMode",
-                                       stage.id.c_str());
-      if (stage.simtLegal && stage.legalSimtFactors.empty())
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "SIMT Stage '%s' has no legal SuperBlock factor", stage.id.c_str());
-
-      LogicalStageCost logicalCost;
-      logicalCost.id = stage.id;
-      logicalCost.description = stage.description;
-      logicalCost.model = stringifyStageCostModel(stage.costModelKind).str();
-      logicalCost.schedule = stage.scheduleKind;
-      logicalCost.iterationCount = stage.iterationCount;
-      logicalCost.features = stage.features;
-      logicalCost.workload = stage.workload;
-      logicalCost.ownedOperationCount =
-          static_cast<int64_t>(stage.operations.size());
-      logicalCost.liveInCount = static_cast<int64_t>(stage.liveIns.size());
-      logicalCost.liveOutCount = static_cast<int64_t>(stage.liveOuts.size());
-      logicalCost.liveInBytes = stage.liveInBytes;
-      logicalCost.liveOutBytes = stage.liveOutBytes;
-      logicalCost.localSimtScopeCount = stage.localSimtScopeCount;
-      logicalCost.scopeInputTensorBytes = stage.scopeInputTensorBytes;
-      logicalCost.scopeOutputTensorBytes = stage.scopeOutputTensorBytes;
-      logicalCost.simtAnchorIndices = stage.simtAnchorIndices;
-      logicalCost.localSimtMaterializable = stage.localSimtMaterializable;
-      logicalCost.localSimtFactors = stage.localSimtFactors;
-      logicalCost.operations = stage.operations;
-
-      llvm::SmallVector<StageImplementation> implementations;
-      if (stage.simdLegal)
-        implementations.push_back({StageMode::SIMD, 1});
-      if (stage.simtLegal)
-        for (int64_t factor : stage.legalSimtFactors)
-          implementations.push_back({StageMode::SIMT, factor});
-
-      for (const StageImplementation &implementation : implementations) {
-        if (!isDeclaredLegal(stage, implementation))
-          return llvm::createStringError(std::errc::invalid_argument,
-                                         "Stage '%s' has an illegal candidate",
-                                         stage.id.c_str());
-        auto model = registry.lookup(implementation.mode, stage.costModelKind);
-        if (!model)
-          return model.takeError();
-        StageResourceCycles resources =
-            implementation.mode == StageMode::SIMD
-                ? mapSIMDWorkload(stage, profile.simd)
-                : mapSIMTWorkload(stage, profile.simt);
-        const StageCostModelContext context{stage, profile};
-
-        StageImplementationCost cost;
-        cost.implementation = implementation;
-        cost.resources = resources;
-        cost.modelName = (*model)->getName().str();
-        cost.profileVersion = profile.profileVersion;
-        cost.source =
-            "post-transform TTIR StageWorkload + immutable HardwareProfile";
-        cost.totalCycles = applySuperBlock(
-            stage, resources, implementation, profile,
-            (*model)->estimate(context, implementation, resources));
-        if (!cost.isValid())
-          return llvm::createStringError(std::errc::invalid_argument,
-                                         "Stage '%s' produced an invalid cost",
-                                         stage.id.c_str());
-        logicalCost.implementations.push_back(std::move(cost));
-      }
-
-      phaseCost.stages.push_back(logicalCost);
-      table.stages.push_back(std::move(logicalCost));
-    }
-    table.phases.push_back(std::move(phaseCost));
+                                     "Stage '%s' has an illegal candidate",
+                                     stage.id.c_str());
+    auto model = registry.lookup(implementation.mode, stage.costModelKind);
+    if (!model)
+      return model.takeError();
+    StageResourceCycles resources =
+        implementation.mode == StageMode::SIMD
+            ? mapSIMDWorkload(stage, profile.simd)
+            : mapSIMTWorkload(stage, profile.simt);
+    const StageCostModelContext context{stage, profile};
+    StageImplementationCost cost;
+    cost.implementation = implementation;
+    cost.resources = resources;
+    cost.modelName = (*model)->getName().str();
+    cost.profileVersion = profile.profileVersion;
+    cost.source =
+        "post-transform TTIR StageWorkload + immutable HardwareProfile";
+    cost.totalCycles = applySuperBlock(
+        stage, resources, implementation, profile,
+        (*model)->estimate(context, implementation, resources));
+    if (!cost.isValid())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "Stage '%s' produced an invalid cost",
+                                     stage.id.c_str());
+    logicalCost.implementations.push_back(std::move(cost));
   }
-  return table;
+  return logicalCost;
 }
 
 llvm::Expected<StageCostTable>
@@ -924,8 +886,12 @@ StageCostEvaluator::evaluate(const StageBoundaryGraph &graph,
     return llvm::createStringError(
         std::errc::invalid_argument,
         "StageBoundaryGraph requires boundaries and candidate edges");
+  if (!profile.isValid())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "HardwareProfile is invalid");
+  if (llvm::Error error = registry.verifyComplete())
+    return std::move(error);
   StageCostTable table;
-  table.domain = graph.domain;
   table.boundarySource = graph.boundarySource;
   table.operationOwnershipComplete = true;
   table.modeledOperationCount =
@@ -936,21 +902,10 @@ StageCostEvaluator::evaluate(const StageBoundaryGraph &graph,
       llvm::formatv("{0}", llvm::json::Value(graph.toJSON())).str();
 
   for (const CandidateStage &candidate : graph.candidates) {
-    StagePartition partition;
-    partition.domain = graph.domain;
-    partition.boundarySource = graph.boundarySource;
-    partition.operationOwnershipComplete = true;
-    partition.modeledOperationCount =
-        static_cast<int64_t>(candidate.stage.operations.size());
-    LogicalPhase phase;
-    phase.id = candidate.stage.id;
-    phase.description = candidate.stage.description;
-    phase.stages.push_back(candidate.stage);
-    partition.phases.push_back(std::move(phase));
-    auto evaluated = evaluate(partition, profile);
+    auto evaluated = evaluateStage(candidate.stage, profile, registry);
     if (!evaluated)
       return evaluated.takeError();
-    LogicalStageCost cost = std::move(evaluated->stages.front());
+    LogicalStageCost cost = std::move(*evaluated);
     cost.beginBoundary = static_cast<int64_t>(candidate.beginBoundary);
     cost.endBoundary = static_cast<int64_t>(candidate.endBoundary);
     table.stages.push_back(std::move(cost));
