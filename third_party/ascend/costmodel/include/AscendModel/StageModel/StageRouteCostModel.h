@@ -180,17 +180,39 @@ struct StageTransitionCost {
   double simdToSimtCycles = 0.0;
   double simtToSimdCycles = 0.0;
   /// Local scope values cross the SIMD/SIMT register-file boundary through
-  /// UB.  SIMD rates are aggregate vector-pipeline rates; SIMT rates are
-  /// explicitly per active thread and are aggregated over one logical warp.
+  /// UB.  All rates are aggregate single-vector-core rates.
   double simdUbLoadBytesPerCycle = 1.0;
   double simdUbStoreBytesPerCycle = 1.0;
-  double simtUbLoadBytesPerThreadPerCycle = 1.0;
-  double simtUbStoreBytesPerThreadPerCycle = 1.0;
+  double simtUbLoadBytesPerCycle = 1.0;
+  double simtUbStoreBytesPerCycle = 1.0;
   int64_t simtWarpSize = 1;
+  /// Low-confidence upper-bound proxy charged once per local SIMT Scope Run
+  /// only by the conservative shadow route.
+  double scopeSetupProxyCycles = 0.0;
+  std::string scopeSetupProxyConfidence = "none";
+  std::string scopeSetupProxySource;
   std::string source;
 
   bool isValid() const;
   double get(StageMode from, StageMode to) const;
+  llvm::json::Object toJSON() const;
+};
+
+struct ScopeRunCost {
+  int64_t beginBoundary = -1;
+  int64_t endBoundary = -1;
+  int64_t superblockFactor = 1;
+  std::vector<size_t> candidateStageIndices;
+  int64_t liveInCount = 0;
+  int64_t liveOutCount = 0;
+  int64_t liveInTensorBytes = 0;
+  int64_t liveOutTensorBytes = 0;
+  double nominalTransitionCycles = 0.0;
+  double setupProxyCycles = 0.0;
+  double chargedTransitionCycles = 0.0;
+  bool materializable = false;
+  std::string rejectionReason;
+
   llvm::json::Object toJSON() const;
 };
 
@@ -201,6 +223,7 @@ struct StageRoutePlan {
   std::vector<size_t> stageIndices;
   std::vector<double> entryTransitionCycles;
   std::vector<double> logicalStageCycles;
+  std::vector<ScopeRunCost> scopeRuns;
   int64_t routeSuperblockFactor = 1;
   double totalCycles = 0.0;
   std::string source;
@@ -221,6 +244,7 @@ struct StageCostModelSummary {
   StageRoutePlan allSimd;
   StageRoutePlan allSimt;
   StageRoutePlan mixed;
+  StageRoutePlan conservativeMixed;
 
   llvm::json::Object toJSON() const;
 };

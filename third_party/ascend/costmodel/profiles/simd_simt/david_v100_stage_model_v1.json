@@ -1,7 +1,7 @@
 {
   "$schema": "./stage_model_profile_schema.json",
-  "schema_version": 11,
-  "profile_version": "david-v100-stage-model-20260825-v18",
+  "schema_version": 12,
+  "profile_version": "david-v100-stage-model-20260826-v19",
   "target": "Ascend950PR/dav-c310",
   "description": "StageModel hardware profile. Stage candidates and workloads are generated online from transformed TTIR.",
   "microbenchmark_profile": "../microbench/ascend_davidv100_v1.json",
@@ -274,9 +274,20 @@
         "fixed_directional_system_cycles": 0.0,
         "simd_ub_load_bytes_per_system_cycle": 512.0,
         "simd_ub_store_bytes_per_system_cycle": 256.0,
-        "simt_ub_load_bytes_per_thread_per_system_cycle": 4.0,
-        "simt_ub_store_bytes_per_thread_per_system_cycle": 4.0,
-        "description": "Only exact tensor values captured by or returned from scope.scope are charged. A value crosses the distinct SIMD/SIMT register files through UB: producer store plus consumer load. SIMD rates reflect the 256-byte vector width with two load and one store issue slots; SIMT rates are explicitly per active thread and are aggregated over one logical warp."
+        "simt_ub_load_bandwidth_measurement": "simt.ub.load.bandwidth",
+        "simt_ub_store_bandwidth_measurement": "simt.ub.store.bandwidth",
+        "description": "Only exact tensor values crossing the complete Scope Run boundary are charged. SIMT rates are aggregate isolated single-AIV UB measurements; SIMD rates remain low-confidence issue-width seeds."
+      },
+      "scope_setup_proxy": {
+        "1": {"measurement": "simt.setup.transition_harness_net.warps_1"},
+        "2": {"measurement": "simt.setup.transition_harness_net.warps_2"},
+        "4": {"measurement": "simt.setup.transition_harness_net.warps_4"},
+        "8": {"measurement": "simt.setup.transition_harness_net.warps_8"},
+        "16": {"measurement": "simt.setup.transition_harness_net.warps_16"},
+        "32": {"measurement": "simt.setup.transition_harness_net.warps_32"},
+        "confidence": "low",
+        "source": "standalone_empty_vf_transition_harness_proxy",
+        "note": "The probe contains no SIMD phase. It is charged once per Scope Run only in the conservative shadow route and is not a directional handoff measurement."
       },
       "source": "Ascend950 SIMT issue limits plus provisional conservative dependency/reconvergence, SuperBlock state-pressure, and scope hand-off rates; replace numeric seeds only through versioned CaModel/microbenchmark evidence."
     }

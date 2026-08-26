@@ -716,6 +716,35 @@ mlir::ascend::buildStageMaterializationPlan(
         std::errc::invalid_argument,
         "StageMaterializationPlan requires a complete legal mixed route");
 
+  if (!route.scopeRuns.empty()) {
+    for (const ScopeRunCost &scopeRun : route.scopeRuns) {
+      if (!scopeRun.materializable || scopeRun.beginBoundary < 0 ||
+          scopeRun.endBoundary <= scopeRun.beginBoundary ||
+          scopeRun.candidateStageIndices.empty())
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "StageMaterializationPlan received an illegal Scope Run");
+      SimtStageRange range;
+      range.beginBoundary = static_cast<size_t>(scopeRun.beginBoundary);
+      range.endBoundary = static_cast<size_t>(scopeRun.endBoundary);
+      range.superblockFactor = scopeRun.superblockFactor;
+      for (size_t stageIndex : scopeRun.candidateStageIndices) {
+        if (stageIndex >= stageModel.stages.size())
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "Scope Run references an invalid candidate Stage");
+        llvm::append_range(range.operations,
+                           stageModel.stages[stageIndex].operations);
+      }
+      if (range.operations.empty())
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "Scope Run contains no materializable operation");
+      plan.ranges.push_back(std::move(range));
+    }
+    return plan;
+  }
+
   for (size_t position = 0; position < route.implementations.size();
        ++position) {
     if (route.implementations[position].mode != StageMode::SIMT)

@@ -263,7 +263,7 @@ struct SimdSimtCostModelOptions {
 };
 
 struct SimdSimtCostReport {
-  int64_t schemaVersion = 15;
+  int64_t schemaVersion = 16;
   std::string model = "ascend_stage_model_v1_cpp";
   std::string profileVersion;
   std::string profileTarget;
@@ -277,11 +277,15 @@ struct SimdSimtCostReport {
   std::string scoreScope = "per_program_ranking_proxy";
 
   SimdSimtCandidateScores candidateCosts;
+  SimdSimtCandidateScores conservativeCandidateCosts;
   SimdSimtCandidateScores candidateRatiosToBest;
   bool allSimdCandidateLegal = true;
   bool allSimtOnlyCandidateLegal = true;
   bool mixedCandidateLegal = false;
+  SimdSimtCandidateKind nominalDecision = SimdSimtCandidateKind::AllSIMD;
+  SimdSimtCandidateKind conservativeDecision = SimdSimtCandidateKind::AllSIMD;
   SimdSimtCandidateKind decision = SimdSimtCandidateKind::AllSIMD;
+  bool transitionSensitive = false;
   double bestScore = 0.0;
 
   bool targetCompatible = true;

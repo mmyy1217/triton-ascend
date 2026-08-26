@@ -244,15 +244,14 @@ static llvm::Error writeStageModelSnapshot(
     return llvm::Error::success();
 
   std::string configKey =
-      llvm::formatv("{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}", mode,
-                    options.actualTarget, options.numWarps,
-                    options.compileOn91095,
-                    options.wholeKernelSuperblockMaterializable,
-                    options.scopeSuperblockMaterializable,
-                    options.logicalProgramCountHint,
-                    options.routeTransformCapabilityJSON,
-                    report.selectionProfileContentSha256,
-                    report.microbenchmarkProfileContentSha256)
+      llvm::formatv(
+          "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}", mode, options.actualTarget,
+          options.numWarps, options.compileOn91095,
+          options.wholeKernelSuperblockMaterializable,
+          options.scopeSuperblockMaterializable,
+          options.logicalProgramCountHint, options.routeTransformCapabilityJSON,
+          report.selectionProfileContentSha256,
+          report.microbenchmarkProfileContentSha256)
           .str();
   const std::string configSha256 = hashText(configKey);
   const std::string kernelName = getKernelName(module);
@@ -296,7 +295,7 @@ static llvm::Error writeStageModelSnapshot(
     return error;
 
   llvm::json::Object summary;
-  summary["stage_model_snapshot_version"] = "2.0";
+  summary["stage_model_snapshot_version"] = "2.1";
   summary["report_schema_version"] = report.schemaVersion;
   summary["kernel_name"] = kernelName;
   summary["ttir_sha256"] = ttirSha256;
@@ -317,6 +316,8 @@ static llvm::Error writeStageModelSnapshot(
   summary["unit"] = report.scoreUnit;
   summary["score_scope"] = report.scoreScope;
   summary["candidate_costs"] = report.candidateCosts.toJSON();
+  summary["conservative_candidate_costs"] =
+      report.conservativeCandidateCosts.toJSON();
   summary["candidate_ratios_to_best"] = report.candidateRatiosToBest.toJSON();
   summary["best_score"] = report.bestScore;
   summary["selectable_candidates"] = selectableCandidates(report);
@@ -334,6 +335,11 @@ static llvm::Error writeStageModelSnapshot(
     unsupported.push_back(term);
   summary["unmodeled_cost_terms"] = std::move(unsupported);
   summary["recommended_decision_kind"] = recommended;
+  summary["nominal_decision_kind"] =
+      stringifySimdSimtCandidate(report.nominalDecision);
+  summary["conservative_decision_kind"] =
+      stringifySimdSimtCandidate(report.conservativeDecision);
+  summary["transition_sensitive"] = report.transitionSensitive;
   summary["effective_decision_kind"] = effective;
   summary["selection_source"] = selectionSource;
   summary["application_reason"] = applicationReason;
@@ -490,7 +496,7 @@ static llvm::Error writeStageModelSnapshot(
   for (llvm::json::Value &file : candidateFiles)
     files.push_back(std::move(file));
   llvm::json::Object manifest;
-  manifest["stage_model_snapshot_version"] = "2.0";
+  manifest["stage_model_snapshot_version"] = "2.1";
   manifest["complete"] = true;
   manifest["kernel_name"] = kernelName;
   manifest["ttir_sha256"] = ttirSha256;
@@ -523,7 +529,8 @@ struct SelectSimdSimtCostModelPass
         scopeSuperblockMaterializable.getValue();
     options.logicalProgramCountHint =
         std::max<int64_t>(0, logicalProgramCountHint.getValue());
-    options.routeTransformCapabilityJSON = routeTransformCapabilityJSON.getValue();
+    options.routeTransformCapabilityJSON =
+        routeTransformCapabilityJSON.getValue();
     auto capability = llvm::json::parse(options.routeTransformCapabilityJSON);
     if (!capability) {
       module.emitError("invalid route-transform-capability-json");
@@ -616,7 +623,11 @@ struct SelectSimdSimtCostModelPass
       applicationReason = "superblock_requires_auto_blockify_v1";
     }
 
-    if (autoMode && actionSupported) {
+    if (autoMode && actionSupported && report.transitionSensitive) {
+      effective = kAllSimd.str();
+      selectionSource = "cpp_cost_model_safe_fallback";
+      applicationReason = "uncalibrated_scope_setup";
+    } else if (autoMode && actionSupported) {
       effective = recommended;
       selectionSource = "cpp_cost_model";
       applicationReason = "minimum_cost_candidate";
@@ -656,7 +667,7 @@ struct SelectSimdSimtCostModelPass
     }
 
     llvm::json::Object reportJSON = report.toJSON();
-    reportJSON["stage_model_snapshot_version"] = "1.0";
+    reportJSON["stage_model_snapshot_version"] = "2.1";
     reportJSON["ttir_sha256"] = ttirSha256;
     llvm::json::Object snapshotConfig;
     snapshotConfig["actual_target"] = options.actualTarget;
@@ -666,7 +677,8 @@ struct SelectSimdSimtCostModelPass
         options.wholeKernelSuperblockMaterializable;
     snapshotConfig["scope_superblock_materializable"] =
         options.scopeSuperblockMaterializable;
-    snapshotConfig["logical_program_count_hint"] = options.logicalProgramCountHint;
+    snapshotConfig["logical_program_count_hint"] =
+        options.logicalProgramCountHint;
     snapshotConfig["route_transform_capability"] = std::move(*capability);
     reportJSON["stage_model_config"] = std::move(snapshotConfig);
     reportJSON["mode"] = mode.getValue();

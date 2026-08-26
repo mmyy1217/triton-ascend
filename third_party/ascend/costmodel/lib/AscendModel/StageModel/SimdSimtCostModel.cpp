@@ -125,8 +125,11 @@ struct CandidateProfile {
   double scopeHandoffFixedDirectionalCycles = 0.0;
   double scopeSimdUbLoadBytesPerCycle = 0.0;
   double scopeSimdUbStoreBytesPerCycle = 0.0;
-  double scopeSimtUbLoadBytesPerThreadPerCycle = 0.0;
-  double scopeSimtUbStoreBytesPerThreadPerCycle = 0.0;
+  double scopeSimtUbLoadBytesPerCycle = 0.0;
+  double scopeSimtUbStoreBytesPerCycle = 0.0;
+  llvm::DenseMap<int64_t, double> scopeSetupProxyCycles;
+  std::string scopeSetupProxyConfidence = "none";
+  std::string scopeSetupProxySource;
 };
 
 /// Small fail-fast facade around llvm::json.  It permits a readable profile
@@ -696,10 +699,10 @@ loadCandidateProfile(llvm::StringRef requestedPath) {
     return llvm::createStringError(std::errc::invalid_argument,
                                    "SIMD/SIMT profile root must be an object");
   auto selectionSchemaVersion = root->getInteger("schema_version");
-  if (!selectionSchemaVersion || *selectionSchemaVersion != 11)
+  if (!selectionSchemaVersion || *selectionSchemaVersion != 12)
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "StageModel profile schema_version must be 11");
+        "StageModel profile schema_version must be 12");
 
   CandidateProfile profile;
   ProfileJSONReader reader;
@@ -952,12 +955,30 @@ loadCandidateProfile(llvm::StringRef requestedPath) {
         profile.scopeSimdUbStoreBytesPerCycle =
             reader.number(*handoff, "simd_ub_store_bytes_per_system_cycle",
                           "simt.stage_resources.scope_handoff");
-        profile.scopeSimtUbLoadBytesPerThreadPerCycle = reader.number(
-            *handoff, "simt_ub_load_bytes_per_thread_per_system_cycle",
-            "simt.stage_resources.scope_handoff");
-        profile.scopeSimtUbStoreBytesPerThreadPerCycle = reader.number(
-            *handoff, "simt_ub_store_bytes_per_thread_per_system_cycle",
-            "simt.stage_resources.scope_handoff");
+        profile.scopeSimtUbLoadBytesPerCycle = resolveNumberOrMeasurement(
+            *handoff, "simt_ub_load_bytes_per_system_cycle",
+            "simt_ub_load_bandwidth_measurement", "byte/system_cycle",
+            microbench, reader, "simt.stage_resources.scope_handoff");
+        profile.scopeSimtUbStoreBytesPerCycle = resolveNumberOrMeasurement(
+            *handoff, "simt_ub_store_bytes_per_system_cycle",
+            "simt_ub_store_bandwidth_measurement", "byte/system_cycle",
+            microbench, reader, "simt.stage_resources.scope_handoff");
+      }
+      if (const auto *setupProxy = reader.object(
+              *resources, "scope_setup_proxy", "simt.stage_resources")) {
+        for (int64_t warps : {1, 2, 4, 8, 16, 32}) {
+          std::string key = std::to_string(warps);
+          if (const auto *entry = reader.object(
+                  *setupProxy, key, "simt.stage_resources.scope_setup_proxy"))
+            profile.scopeSetupProxyCycles[warps] = resolveNumberOrMeasurement(
+                *entry, "system_cycles", "measurement", "system_cycle",
+                microbench, reader,
+                "simt.stage_resources.scope_setup_proxy." + key);
+        }
+        profile.scopeSetupProxyConfidence =
+            reader.optionalString(*setupProxy, "confidence", "none");
+        profile.scopeSetupProxySource = reader.optionalString(
+            *setupProxy, "source", "standalone_empty_vf_proxy");
       }
     }
   }
@@ -966,20 +987,20 @@ loadCandidateProfile(llvm::StringRef requestedPath) {
     return llvm::createStringError(
         std::errc::invalid_argument, "invalid SIMD/SIMT profile '%s': %s",
         path.c_str(), reader.getError().str().c_str());
-  if (profile.profileVersion != "david-v100-stage-model-20260825-v18")
+  if (profile.profileVersion != "david-v100-stage-model-20260826-v19")
     return llvm::createStringError(
         std::errc::invalid_argument,
         "unsupported StageModel profile version '%s' "
-        "(expected david-v100-stage-model-20260825-v18)",
+        "(expected david-v100-stage-model-20260826-v19)",
         profile.profileVersion.c_str());
   const bool usesSharedMicrobench = true;
   if (usesSharedMicrobench && !microbench)
     return llvm::createStringError(std::errc::invalid_argument,
-                                   "StageModel v18 profile must reference "
+                                   "StageModel v19 profile must reference "
                                    "microbenchmark_profile");
-  if (*selectionSchemaVersion != 11)
+  if (*selectionSchemaVersion != 12)
     return llvm::createStringError(std::errc::invalid_argument,
-                                   "StageModel v18 requires schema_version 11");
+                                   "StageModel v19 requires schema_version 12");
   if (profile.simdVectorWidthBits <= 0 || profile.simtWarpSize <= 0 ||
       profile.simdMte2BytesPerCycle <= 0.0 ||
       profile.simdMte3BytesPerCycle <= 0.0 || profile.simtLoadWarpRate <= 0.0 ||
@@ -993,8 +1014,10 @@ loadCandidateProfile(llvm::StringRef requestedPath) {
       profile.scopeHandoffFixedDirectionalCycles < 0.0 ||
       profile.scopeSimdUbLoadBytesPerCycle <= 0.0 ||
       profile.scopeSimdUbStoreBytesPerCycle <= 0.0 ||
-      profile.scopeSimtUbLoadBytesPerThreadPerCycle <= 0.0 ||
-      profile.scopeSimtUbStoreBytesPerThreadPerCycle <= 0.0 ||
+      profile.scopeSimtUbLoadBytesPerCycle <= 0.0 ||
+      profile.scopeSimtUbStoreBytesPerCycle <= 0.0 ||
+      profile.scopeSetupProxyCycles.size() != 6 ||
+      profile.scopeSetupProxyConfidence != "low" ||
       !profile.simdStageResources.isValid() ||
       !profile.simtStageResources.isValid())
     return llvm::createStringError(
@@ -1101,22 +1124,31 @@ buildStageHardwareProfile(const CandidateProfile &profile, unsigned numWarps) {
       profile.scopeSimdUbLoadBytesPerCycle;
   hardware.transition.simdUbStoreBytesPerCycle =
       profile.scopeSimdUbStoreBytesPerCycle;
-  hardware.transition.simtUbLoadBytesPerThreadPerCycle =
-      profile.scopeSimtUbLoadBytesPerThreadPerCycle;
-  hardware.transition.simtUbStoreBytesPerThreadPerCycle =
-      profile.scopeSimtUbStoreBytesPerThreadPerCycle;
+  hardware.transition.simtUbLoadBytesPerCycle =
+      profile.scopeSimtUbLoadBytesPerCycle;
+  hardware.transition.simtUbStoreBytesPerCycle =
+      profile.scopeSimtUbStoreBytesPerCycle;
   hardware.transition.simtWarpSize = profile.simtWarpSize;
+  auto setupProxy = profile.scopeSetupProxyCycles.find(numWarps);
+  if (setupProxy == profile.scopeSetupProxyCycles.end())
+    setupProxy = profile.scopeSetupProxyCycles.find(32);
+  hardware.transition.scopeSetupProxyCycles = setupProxy->second;
+  hardware.transition.scopeSetupProxyConfidence =
+      profile.scopeSetupProxyConfidence;
+  hardware.transition.scopeSetupProxySource = profile.scopeSetupProxySource;
   hardware.transition.source =
       "exact scope tensor bytes crossing SIMD/SIMT register files through UB; "
-      "directional setup remains separate from standalone SIMT VF startup";
+      "directional setup remains unmeasured; standalone SIMT VF setup is "
+      "used only by the conservative shadow route";
   return hardware;
 }
 
-static llvm::Expected<StageCostModelSummary> evaluateStageModel(
-    const SimdSimtFeatureSummary &features, const CandidateProfile &profile,
-    unsigned numWarps, bool wholeKernelSuperblockMaterializable,
-    bool scopeSuperblockMaterializable, ModuleOp module,
-    const SimtAnchorPlan &anchorPlan) {
+static llvm::Expected<StageCostModelSummary>
+evaluateStageModel(const SimdSimtFeatureSummary &features,
+                   const CandidateProfile &profile, unsigned numWarps,
+                   bool wholeKernelSuperblockMaterializable,
+                   bool scopeSuperblockMaterializable, ModuleOp module,
+                   const SimtAnchorPlan &anchorPlan) {
   int64_t maximumSuperblockFactor =
       (wholeKernelSuperblockMaterializable || features.autoBlockifyV1Applied)
           ? 4
@@ -1206,6 +1238,18 @@ static SimdSimtCandidateKind chooseBest(const SimdSimtCandidateScores &scores,
   return legalCandidates(scores, allSimdLegal, allSimtLegal, mixedLegal)
       .front()
       .second;
+}
+
+static bool sameRoute(const StageRoutePlan &lhs, const StageRoutePlan &rhs) {
+  if (lhs.stageIndices != rhs.stageIndices ||
+      lhs.implementations.size() != rhs.implementations.size())
+    return false;
+  for (auto [left, right] :
+       llvm::zip_equal(lhs.implementations, rhs.implementations))
+    if (left.mode != right.mode ||
+        left.superblockFactor != right.superblockFactor)
+      return false;
+  return true;
 }
 
 static SimdSimtCandidateKind
@@ -1544,7 +1588,12 @@ llvm::json::Object SimdSimtCostReport::toJSON() const {
   result["score_scope"] = scoreScope;
   result["excludes"] = llvm::json::Array({"host_launch", "grid_wave_count"});
   result["candidate_costs"] = candidateCosts.toJSON();
+  result["conservative_candidate_costs"] = conservativeCandidateCosts.toJSON();
   result["candidate_ratios_to_best"] = candidateRatiosToBest.toJSON();
+  result["nominal_decision_kind"] = stringifySimdSimtCandidate(nominalDecision);
+  result["conservative_decision_kind"] =
+      stringifySimdSimtCandidate(conservativeDecision);
+  result["transition_sensitive"] = transitionSensitive;
   result["decision_kind"] = stringifySimdSimtCandidate(decision);
   result["best_score"] = bestScore;
   llvm::json::Array selectableCandidates;
@@ -2168,8 +2217,7 @@ mlir::ascend::analyzeSimdSimtFeatures(ModuleOp module,
 static llvm::Expected<SimdSimtCostReport>
 estimateStageCandidatesImpl(const SimdSimtFeatureSummary &features,
                             const SimdSimtCostModelOptions &options,
-                            ModuleOp module,
-                            const SimtAnchorPlan &anchorPlan) {
+                            ModuleOp module, const SimtAnchorPlan &anchorPlan) {
   auto profileOrError = loadCandidateProfile(options.profilePath);
   if (!profileOrError)
     return profileOrError.takeError();
@@ -2203,12 +2251,12 @@ estimateStageCandidatesImpl(const SimdSimtFeatureSummary &features,
   report.stageModel = std::move(*stageModel);
 
   report.allSimdCandidateLegal = report.stageModel.allSimd.legal;
-  report.allSimtOnlyCandidateLegal =
-      options.compileOn91095 && !features.hasExplicitScope &&
-      report.stageModel.allSimt.legal;
-  report.mixedCandidateLegal =
-      options.compileOn91095 && !features.hasExplicitScope &&
-      report.stageModel.mixed.legal;
+  report.allSimtOnlyCandidateLegal = options.compileOn91095 &&
+                                     !features.hasExplicitScope &&
+                                     report.stageModel.allSimt.legal;
+  report.mixedCandidateLegal = options.compileOn91095 &&
+                               !features.hasExplicitScope &&
+                               report.stageModel.mixed.legal;
   if (report.stageModel.mixed.legal) {
     report.applicability.mechanismDetected = true;
     report.applicability.materializable = options.compileOn91095;
@@ -2220,6 +2268,9 @@ estimateStageCandidatesImpl(const SimdSimtFeatureSummary &features,
   report.candidateCosts.allSimd = report.stageModel.allSimd.totalCycles;
   report.candidateCosts.allSimtOnly = report.stageModel.allSimt.totalCycles;
   report.candidateCosts.mixedSimdSimt = report.stageModel.mixed.totalCycles;
+  report.conservativeCandidateCosts = report.candidateCosts;
+  report.conservativeCandidateCosts.mixedSimdSimt =
+      report.stageModel.conservativeMixed.totalCycles;
   const unsigned legalCandidateCount =
       static_cast<unsigned>(report.allSimdCandidateLegal) +
       static_cast<unsigned>(report.allSimtOnlyCandidateLegal) +
@@ -2228,9 +2279,19 @@ estimateStageCandidatesImpl(const SimdSimtFeatureSummary &features,
     return llvm::createStringError(
         std::errc::not_supported,
         "StageModel found no materializable route candidate");
-  report.decision =
+  report.nominalDecision =
       chooseBest(report.candidateCosts, report.allSimdCandidateLegal,
                  report.allSimtOnlyCandidateLegal, report.mixedCandidateLegal);
+  report.conservativeDecision = chooseBest(
+      report.conservativeCandidateCosts, report.allSimdCandidateLegal,
+      report.allSimtOnlyCandidateLegal, report.mixedCandidateLegal);
+  report.transitionSensitive =
+      report.nominalDecision != report.conservativeDecision ||
+      (report.nominalDecision == SimdSimtCandidateKind::MixedSIMDSIMT &&
+       !sameRoute(report.stageModel.mixed,
+                  report.stageModel.conservativeMixed));
+  report.decision = report.transitionSensitive ? SimdSimtCandidateKind::AllSIMD
+                                               : report.nominalDecision;
   report.bestScore = report.candidateCosts.get(report.decision);
   const double denominator = std::max(1.0e-9, report.bestScore);
   report.candidateRatiosToBest = {

@@ -23,7 +23,7 @@
       "description": "Relative path to this JSON Schema; used by editors and offline validators, not by StageModel scoring."
     },
     "schema_version": {
-      "const": 11,
+      "const": 12,
       "description": "Machine-readable StageModel hardware-profile layout."
     },
     "profile_version": {
@@ -284,6 +284,103 @@
           ],
           "description": "Confidence of this dot prior; when dot work exists, it contributes to the resource-confidence minimum used by the gate."
         }
+      },
+      "additionalProperties": false
+    },
+    "stage_resources": {
+      "type": "object",
+      "required": [
+        "description",
+        "scalar_operations_per_system_cycle",
+        "issue_instructions_per_system_cycle",
+        "spill_transactions_per_system_cycle",
+        "indirect_memory",
+        "control_flow",
+        "source"
+      ],
+      "properties": {
+        "description": {"type": "string"},
+        "scalar_operations_per_system_cycle": {"type": "number", "exclusiveMinimum": 0},
+        "issue_instructions_per_system_cycle": {"type": "number", "exclusiveMinimum": 0},
+        "spill_transactions_per_system_cycle": {"type": "number", "exclusiveMinimum": 0},
+        "indirect_memory": {"$ref": "#/definitions/indirect_memory"},
+        "control_flow": {"$ref": "#/definitions/control_flow"},
+        "superblock": {"$ref": "#/definitions/superblock"},
+        "scope_handoff": {"$ref": "#/definitions/scope_handoff"},
+        "scope_setup_proxy": {"$ref": "#/definitions/scope_setup_proxy"},
+        "source": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "indirect_memory": {
+      "type": "object",
+      "required": ["load_transactions_per_system_cycle", "store_transactions_per_system_cycle", "dependency_latency_system_cycles"],
+      "properties": {
+        "load_transactions_per_system_cycle": {"type": "number", "exclusiveMinimum": 0},
+        "store_transactions_per_system_cycle": {"type": "number", "exclusiveMinimum": 0},
+        "dependency_latency_system_cycles": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "control_flow": {
+      "type": "object",
+      "required": ["loop_backedge_system_cycles", "conditional_branch_system_cycles", "divergent_branch_penalty_system_cycles", "synchronization_system_cycles"],
+      "properties": {
+        "loop_backedge_system_cycles": {"type": "number", "minimum": 0},
+        "conditional_branch_system_cycles": {"type": "number", "minimum": 0},
+        "divergent_branch_penalty_system_cycles": {"type": "number", "minimum": 0},
+        "synchronization_system_cycles": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "superblock": {
+      "type": "object",
+      "required": ["useful_factor_limit", "persistent_state_pressure_free_factor", "persistent_state_bytes_per_system_cycle", "description"],
+      "properties": {
+        "useful_factor_limit": {"type": "integer", "minimum": 1},
+        "persistent_state_pressure_free_factor": {"type": "integer", "minimum": 1},
+        "persistent_state_bytes_per_system_cycle": {"type": "number", "exclusiveMinimum": 0},
+        "description": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "scope_handoff": {
+      "type": "object",
+      "required": ["fixed_directional_system_cycles", "simd_ub_load_bytes_per_system_cycle", "simd_ub_store_bytes_per_system_cycle", "simt_ub_load_bandwidth_measurement", "simt_ub_store_bandwidth_measurement", "description"],
+      "properties": {
+        "fixed_directional_system_cycles": {"type": "number", "minimum": 0},
+        "simd_ub_load_bytes_per_system_cycle": {"type": "number", "exclusiveMinimum": 0},
+        "simd_ub_store_bytes_per_system_cycle": {"type": "number", "exclusiveMinimum": 0},
+        "simt_ub_load_bandwidth_measurement": {"type": "string"},
+        "simt_ub_store_bandwidth_measurement": {"type": "string"},
+        "simt_ub_load_bytes_per_system_cycle": {"type": "number", "exclusiveMinimum": 0},
+        "simt_ub_store_bytes_per_system_cycle": {"type": "number", "exclusiveMinimum": 0},
+        "description": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "scope_setup_proxy": {
+      "type": "object",
+      "required": ["1", "2", "4", "8", "16", "32", "confidence", "source", "note"],
+      "properties": {
+        "1": {"$ref": "#/definitions/scope_setup_proxy_entry"},
+        "2": {"$ref": "#/definitions/scope_setup_proxy_entry"},
+        "4": {"$ref": "#/definitions/scope_setup_proxy_entry"},
+        "8": {"$ref": "#/definitions/scope_setup_proxy_entry"},
+        "16": {"$ref": "#/definitions/scope_setup_proxy_entry"},
+        "32": {"$ref": "#/definitions/scope_setup_proxy_entry"},
+        "confidence": {"$ref": "#/definitions/confidence"},
+        "source": {"type": "string"},
+        "note": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "scope_setup_proxy_entry": {
+      "type": "object",
+      "required": ["measurement"],
+      "properties": {
+        "measurement": {"type": "string"},
+        "system_cycles": {"type": "number", "minimum": 0}
       },
       "additionalProperties": false
     },
