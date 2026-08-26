@@ -101,6 +101,7 @@ public:
 struct SimtStageRange {
   size_t beginBoundary = 0;
   size_t endBoundary = 0;
+  int64_t superblockFactor = 1;
   std::vector<Operation *> operations;
 
   llvm::json::Object toJSON() const;

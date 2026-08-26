@@ -100,7 +100,9 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
          const std::string &profilePath, const std::string &actualTarget,
          int64_t numWarps, bool compileOn91095,
          bool wholeKernelSuperblockMaterializable,
-         bool scopeSuperblockMaterializable, const std::string &reportFile) {
+         bool scopeSuperblockMaterializable, int64_t logicalProgramCountHint,
+         const std::string &routeTransformCapabilityJSON,
+         const std::string &reportFile) {
         mlir::ascend::SelectSimdSimtCostModelPassOptions opts;
         opts.mode = mode;
         opts.profilePath = profilePath;
@@ -110,6 +112,8 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
         opts.wholeKernelSuperblockMaterializable =
             wholeKernelSuperblockMaterializable;
         opts.scopeSuperblockMaterializable = scopeSuperblockMaterializable;
+        opts.logicalProgramCountHint = logicalProgramCountHint;
+        opts.routeTransformCapabilityJSON = routeTransformCapabilityJSON;
         opts.reportFile = reportFile;
         pm.addPass(mlir::ascend::createSelectSimdSimtCostModelPass(opts));
       },
@@ -118,6 +122,8 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
       py::arg("compile_on_910_95"),
       py::arg("whole_kernel_superblock_materializable") = false,
       py::arg("scope_superblock_materializable") = false,
+      py::arg("logical_program_count_hint") = 0,
+      py::arg("route_transform_capability_json") = "{}",
       py::arg("report_file") = "");
 
   m.def("add_materialize_simt_scopes", [](mlir::PassManager &pm) {

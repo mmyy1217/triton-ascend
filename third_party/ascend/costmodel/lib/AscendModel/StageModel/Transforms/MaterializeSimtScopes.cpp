@@ -35,6 +35,16 @@ namespace {
 
 using namespace simt_selection;
 
+inline constexpr llvm::StringLiteral kScopeSuperblockFactorAttr =
+    "ascend.scope_superblock.factor";
+
+static void setScopeExecutionAttrs(Operation *scopeOp, OpBuilder &builder,
+                                   int64_t superblockFactor) {
+  scopeOp->setAttr(kVectorModeAttr, builder.getStringAttr("simt"));
+  scopeOp->setAttr(kScopeSuperblockFactorAttr,
+                   builder.getI64IntegerAttr(superblockFactor));
+}
+
 static bool isMaterializable(Operation *op) {
   return op->getBlock() && !isa<ModuleOp>(op) &&
          !op->hasTrait<OpTrait::IsIsolatedFromAbove>() &&
@@ -49,13 +59,14 @@ static bool isMaterializable(Operation *op) {
 /// Scope regions are not isolated from above, so operands remain legal
 /// captures.  Moving only the planned operation keeps SIMD producers and
 /// consumers outside the SIMT region.
-static LogicalResult wrapAnchorOperation(Operation *op) {
+static LogicalResult wrapAnchorOperation(Operation *op,
+                                         int64_t superblockFactor) {
   OpBuilder builder(op);
   OperationState scopeState(op->getLoc(), "scope.scope");
   scopeState.addTypes(op->getResultTypes());
-  scopeState.addAttribute(kVectorModeAttr, builder.getStringAttr("simt"));
   scopeState.addRegion();
   Operation *scopeOp = builder.create(scopeState);
+  setScopeExecutionAttrs(scopeOp, builder, superblockFactor);
 
   Region &scopeRegion = scopeOp->getRegion(0);
   auto *scopeBody = new Block();
@@ -83,7 +94,8 @@ static LogicalResult wrapAnchorOperation(Operation *op) {
 /// `insertionPoint` lets solve_tril move pure mask setup across the initial
 /// loads while keeping those loads outside, matching the hand-written scope.
 static LogicalResult wrapAnchorRange(ArrayRef<Operation *> ops,
-                                     Operation *insertionPoint) {
+                                     Operation *insertionPoint,
+                                     int64_t superblockFactor) {
   if (ops.empty())
     return success();
   Block *parent = insertionPoint ? insertionPoint->getBlock() : nullptr;
@@ -121,9 +133,9 @@ static LogicalResult wrapAnchorRange(ArrayRef<Operation *> ops,
   for (Value value : escaping)
     escapingTypes.push_back(value.getType());
   scopeState.addTypes(escapingTypes);
-  scopeState.addAttribute(kVectorModeAttr, builder.getStringAttr("simt"));
   scopeState.addRegion();
   Operation *scopeOp = builder.create(scopeState);
+  setScopeExecutionAttrs(scopeOp, builder, superblockFactor);
 
   Region &scopeRegion = scopeOp->getRegion(0);
   auto *scopeBody = new Block();
@@ -150,7 +162,10 @@ static LogicalResult wrapAnchorRange(ArrayRef<Operation *> ops,
 } // namespace
 
 LogicalResult materializeSimtAnchorPlan(ModuleOp module,
-                                        const SimtAnchorPlan &plan) {
+                                        const SimtAnchorPlan &plan,
+                                        int64_t superblockFactor) {
+  if (superblockFactor != 1 && superblockFactor != 2 && superblockFactor != 4)
+    return module.emitError("SIMT scope superblock factor must be 1, 2 or 4");
   struct PlannedRange {
     SmallVector<Operation *> operations;
     Operation *insertionPoint = nullptr;
@@ -184,12 +199,13 @@ LogicalResult materializeSimtAnchorPlan(ModuleOp module,
 
   int64_t materialized = 0;
   for (const PlannedRange &range : anchorRanges) {
-    if (failed(wrapAnchorRange(range.operations, range.insertionPoint)))
+    if (failed(wrapAnchorRange(range.operations, range.insertionPoint,
+                               superblockFactor)))
       return failure();
     ++materialized;
   }
   for (Operation *op : anchorOps) {
-    if (failed(wrapAnchorOperation(op)))
+    if (failed(wrapAnchorOperation(op, superblockFactor)))
       return failure();
     ++materialized;
   }
@@ -207,7 +223,8 @@ LogicalResult materializeSimtStagePlan(ModuleOp module,
         "StageMaterializationPlan contains no local SIMT range");
   for (const SimtStageRange &range : plan.ranges) {
     if (range.operations.empty() ||
-        failed(wrapAnchorRange(range.operations, range.operations.front())))
+        failed(wrapAnchorRange(range.operations, range.operations.front(),
+                               range.superblockFactor)))
       return module.emitError(
           "StageMaterializationPlan contains an illegal SIMT range");
   }

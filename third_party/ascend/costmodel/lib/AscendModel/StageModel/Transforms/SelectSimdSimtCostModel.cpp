@@ -244,11 +244,13 @@ static llvm::Error writeStageModelSnapshot(
     return llvm::Error::success();
 
   std::string configKey =
-      llvm::formatv("{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}", mode,
+      llvm::formatv("{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}", mode,
                     options.actualTarget, options.numWarps,
                     options.compileOn91095,
                     options.wholeKernelSuperblockMaterializable,
                     options.scopeSuperblockMaterializable,
+                    options.logicalProgramCountHint,
+                    options.routeTransformCapabilityJSON,
                     report.selectionProfileContentSha256,
                     report.microbenchmarkProfileContentSha256)
           .str();
@@ -282,6 +284,9 @@ static llvm::Error writeStageModelSnapshot(
       options.wholeKernelSuperblockMaterializable;
   config["scope_superblock_materializable"] =
       options.scopeSuperblockMaterializable;
+  config["logical_program_count_hint"] = options.logicalProgramCountHint;
+  if (auto capability = llvm::json::parse(options.routeTransformCapabilityJSON))
+    config["route_transform_capability"] = std::move(*capability);
   config["selection_profile_content_sha256"] =
       report.selectionProfileContentSha256;
   config["microbenchmark_profile_content_sha256"] =
@@ -334,6 +339,7 @@ static llvm::Error writeStageModelSnapshot(
   summary["application_reason"] = applicationReason;
   summary["action_supported"] = actionSupported;
   summary["selected_superblock_factor"] = selectedSuperblockFactor;
+  summary["logical_program_count_hint"] = options.logicalProgramCountHint;
   summary["materialized_simt_anchor_count"] = materializedAnchorCount;
   summary["materialized_simt_stage_scope_count"] =
       materializationPlan
@@ -515,6 +521,15 @@ struct SelectSimdSimtCostModelPass
         wholeKernelSuperblockMaterializable.getValue();
     options.scopeSuperblockMaterializable =
         scopeSuperblockMaterializable.getValue();
+    options.logicalProgramCountHint =
+        std::max<int64_t>(0, logicalProgramCountHint.getValue());
+    options.routeTransformCapabilityJSON = routeTransformCapabilityJSON.getValue();
+    auto capability = llvm::json::parse(options.routeTransformCapabilityJSON);
+    if (!capability) {
+      module.emitError("invalid route-transform-capability-json");
+      signalPassFailure();
+      return;
+    }
 
     SimtAnchorPlan anchorPlan =
         buildMixedSimtAnchorPlan(module, options.compileOn91095);
@@ -561,6 +576,9 @@ struct SelectSimdSimtCostModelPass
           applicationReason = "no_materializable_mixed_stage_plan";
         } else {
           selectedStagePlan = std::move(*plan);
+          selectedMixedAnchorPlan =
+              buildSelectedMixedAnchorPlan(report.stageModel, anchorPlan);
+          mixedAnchors = selectedMixedAnchorPlan.materializableRoots();
         }
       } else {
         selectedMixedAnchorPlan =
@@ -629,7 +647,8 @@ struct SelectSimdSimtCostModelPass
       LogicalResult materialized =
           selectedStagePlan
               ? materializeSimtStagePlan(module, *selectedStagePlan)
-              : materializeSimtAnchorPlan(module, selectedMixedAnchorPlan);
+              : materializeSimtAnchorPlan(module, selectedMixedAnchorPlan,
+                                          selectedSuperblockFactor);
       if (failed(materialized)) {
         signalPassFailure();
         return;
@@ -647,6 +666,8 @@ struct SelectSimdSimtCostModelPass
         options.wholeKernelSuperblockMaterializable;
     snapshotConfig["scope_superblock_materializable"] =
         options.scopeSuperblockMaterializable;
+    snapshotConfig["logical_program_count_hint"] = options.logicalProgramCountHint;
+    snapshotConfig["route_transform_capability"] = std::move(*capability);
     reportJSON["stage_model_config"] = std::move(snapshotConfig);
     reportJSON["mode"] = mode.getValue();
     reportJSON["recommended_decision_kind"] = recommended;
@@ -663,6 +684,15 @@ struct SelectSimdSimtCostModelPass
     if (selectedStagePlan)
       reportJSON["stage_materialization_plan"] = selectedStagePlan->toJSON();
     reportJSON["selected_superblock_factor"] = selectedSuperblockFactor;
+    reportJSON["logical_program_count_hint"] = options.logicalProgramCountHint;
+    if (options.logicalProgramCountHint > 0) {
+      reportJSON["effective_runtime_factor"] = std::min<int64_t>(
+          selectedSuperblockFactor, options.logicalProgramCountHint);
+      reportJSON["full_group_count"] =
+          options.logicalProgramCountHint / selectedSuperblockFactor;
+      reportJSON["tail_count"] =
+          options.logicalProgramCountHint % selectedSuperblockFactor;
+    }
     std::string json =
         llvm::formatv("{0}", llvm::json::Value(std::move(reportJSON))).str();
     module->setAttr(kReportJSONAttr, builder.getStringAttr(json));

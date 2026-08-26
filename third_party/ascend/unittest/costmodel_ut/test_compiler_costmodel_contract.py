@@ -195,6 +195,43 @@ class CompilerCostmodelContractTest(unittest.TestCase):
         self.assertEqual(metadata["auto_simt_superblock_factor"], 4)
         self.assertEqual(metadata["auto_simt_requested_kind"], "mixed_simd_simt")
 
+    def test_route_transform_capability_is_shared_with_stage_model(self):
+        cmplr, _dump_mgr, _GPUTarget = self._load_compiler_module()
+        metadata = {
+            "ttir_layout_merge_applied": True,
+            "ttir_layout_coalesce_factor": 2,
+            "ttir_layout_coalesce_axis": 0,
+            "auto_blockify_v1_requested": True,
+            "auto_blockify_v1_enabled": True,
+            "auto_blockify_v1_disable_reasons": [],
+        }
+        opt = types.SimpleNamespace(
+            compile_on_910_95=True,
+            num_warps=4,
+            logical_program_count_hint=9,
+            physical_vector_core_count_hint=32,
+        )
+
+        capability = __import__("json").loads(
+            cmplr._publish_route_transform_capability(metadata, opt))
+        self.assertTrue(capability["row_coalescing_applied"])
+        self.assertEqual(capability["row_coalescing_factor"], 2)
+        self.assertEqual(capability["logical_program_count_hint"], 5)
+        self.assertEqual(capability["scope_superblock_factors"], [1, 2, 4])
+        self.assertEqual(capability["superblock_runtime_groups"]["4"], {
+            "full_group_count": 1,
+            "tail_count": 1,
+        })
+
+    def test_mixed_route_keeps_the_outer_superblock_factor_at_one(self):
+        cmplr, _dump_mgr, _GPUTarget = self._load_compiler_module()
+        opt = types.SimpleNamespace(superblock_factor=4)
+        metadata = {
+            "auto_simt_effective_kind": "mixed_simd_simt",
+            "auto_simt_scope_superblock_factor": 4,
+        }
+        self.assertEqual(cmplr._selected_npuir_superblock_factor(metadata, opt), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

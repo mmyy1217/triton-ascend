@@ -1117,7 +1117,6 @@ static llvm::Expected<StageCostModelSummary> evaluateStageModel(
     unsigned numWarps, bool wholeKernelSuperblockMaterializable,
     bool scopeSuperblockMaterializable, ModuleOp module,
     const SimtAnchorPlan &anchorPlan) {
-  (void)scopeSuperblockMaterializable;
   int64_t maximumSuperblockFactor =
       (wholeKernelSuperblockMaterializable || features.autoBlockifyV1Applied)
           ? 4

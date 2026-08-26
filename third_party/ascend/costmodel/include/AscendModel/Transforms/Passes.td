@@ -225,6 +225,12 @@ def SelectSimdSimtCostModelPass
     Option<"scopeSuperblockMaterializable", "scope-superblock-materializable", "bool",
            /*default=*/"false",
            "Whether backend integration can materialize mixed F2/F4 with AutoBlockify V1">,
+    Option<"logicalProgramCountHint", "logical-program-count-hint", "int64_t",
+           /*default=*/"0",
+           "Optional transformed logical-program count used to cost full SuperBlock groups and tails">,
+    Option<"routeTransformCapabilityJSON", "route-transform-capability-json", "std::string",
+           /*default=*/"\"{}\"",
+           "Resolved layout/V1 capability shared by scoring, materialization, and reporting">,
     Option<"reportFile", "report-file", "std::string",
            /*default=*/"\"\"",
            "Optional directory for split, readable StageModel snapshots">

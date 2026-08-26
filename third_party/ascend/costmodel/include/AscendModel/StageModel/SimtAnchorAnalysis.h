@@ -140,7 +140,8 @@ struct SimtAnchorPlan {
 /// does not rediscover anchors, recompute features, or read per-operation
 /// selection attributes.  The caller owns the final effective route decision.
 LogicalResult materializeSimtAnchorPlan(ModuleOp module,
-                                        const SimtAnchorPlan &plan);
+                                        const SimtAnchorPlan &plan,
+                                        int64_t superblockFactor = 1);
 
 /// Classify a TTIR operation by SIMT mechanism, independently of whether the
 /// selected target can currently materialize it.

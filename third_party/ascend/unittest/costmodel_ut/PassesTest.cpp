@@ -696,6 +696,9 @@ TEST(CostModelPassesTest, StageModelSnapshotIsSplitAndReadable) {
   options.actualTarget = "Ascend950PR_9579";
   options.numWarps = 4;
   options.compileOn91095 = true;
+  options.logicalProgramCountHint = 9;
+  options.routeTransformCapabilityJSON =
+      R"json({"schema_version":1,"logical_program_count_hint":9})json";
   options.reportFile = rootPath.str().str();
   ASSERT_TRUE(runPasses(*module, createSelectSimdSimtCostModelPass(options)));
 
@@ -732,6 +735,20 @@ TEST(CostModelPassesTest, StageModelSnapshotIsSplitAndReadable) {
   expectJSONFile("candidates/index.json");
   expectJSONFile("routes.json");
   expectJSONFile("materialization-plan.json");
+
+  llvm::SmallString<256> configPath(snapshotPath);
+  llvm::sys::path::append(configPath, "config.json");
+  auto configBuffer = llvm::MemoryBuffer::getFile(configPath);
+  ASSERT_TRUE(configBuffer);
+  auto config = llvm::json::parse(configBuffer.get()->getBuffer());
+  ASSERT_TRUE(static_cast<bool>(config));
+  auto *configObject = config->getAsObject();
+  ASSERT_TRUE(configObject);
+  auto logicalProgramCount =
+      configObject->getInteger("logical_program_count_hint");
+  ASSERT_TRUE(logicalProgramCount);
+  EXPECT_EQ(*logicalProgramCount, 9);
+  EXPECT_TRUE(configObject->getObject("route_transform_capability"));
 
   llvm::SmallString<256> candidateDirectory(snapshotPath);
   llvm::sys::path::append(candidateDirectory, "candidates");
@@ -780,6 +797,10 @@ module attributes {
   ASSERT_TRUE(scopeOp->getAttrOfType<StringAttr>("vector_mode"));
   EXPECT_EQ(scopeOp->getAttrOfType<StringAttr>("vector_mode").getValue(),
             "simt");
+  auto factor =
+      scopeOp->getAttrOfType<mlir::IntegerAttr>("ascend.scope_superblock.factor");
+  ASSERT_TRUE(factor);
+  EXPECT_EQ(factor.getInt(), 1);
 
   auto &scopeBody = scopeOp->getRegion(0).front();
   Operation *scopedAdd = nullptr;

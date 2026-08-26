@@ -689,6 +689,7 @@ llvm::json::Object SimtStageRange::toJSON() const {
   llvm::json::Object result;
   result["begin_boundary"] = static_cast<int64_t>(beginBoundary);
   result["end_boundary"] = static_cast<int64_t>(endBoundary);
+  result["superblock_factor"] = superblockFactor;
   llvm::json::Array operationsArray;
   for (Operation *operation : operations)
     operationsArray.push_back(operation->getName().getStringRef());
@@ -740,6 +741,11 @@ mlir::ascend::buildStageMaterializationPlan(
                  plan.ranges.back().operations.back()->getNextNode() ==
                      stage.operations.front();
     if (merge) {
+      if (plan.ranges.back().superblockFactor !=
+          route.implementations[position].superblockFactor)
+        merge = false;
+    }
+    if (merge) {
       plan.ranges.back().endBoundary = static_cast<size_t>(stage.endBoundary);
       llvm::append_range(plan.ranges.back().operations, stage.operations);
       continue;
@@ -747,6 +753,7 @@ mlir::ascend::buildStageMaterializationPlan(
     SimtStageRange range;
     range.beginBoundary = static_cast<size_t>(stage.beginBoundary);
     range.endBoundary = static_cast<size_t>(stage.endBoundary);
+    range.superblockFactor = route.implementations[position].superblockFactor;
     range.operations = stage.operations;
     plan.ranges.push_back(std::move(range));
   }

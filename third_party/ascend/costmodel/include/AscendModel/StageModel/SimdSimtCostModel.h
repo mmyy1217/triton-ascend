@@ -256,6 +256,10 @@ struct SimdSimtCostModelOptions {
   /// True when backend integration can apply AutoBlockify V1 to a pure-SIMT
   /// kernel.  This is deliberately independent of local-scope batching.
   bool wholeKernelSuperblockMaterializable = false;
+  /// Transformed logical program count after layout coalescing.  Zero means
+  /// the frontend cannot provide a stable launch-size fact for this compile.
+  int64_t logicalProgramCountHint = 0;
+  std::string routeTransformCapabilityJSON = "{}";
 };
 
 struct SimdSimtCostReport {
