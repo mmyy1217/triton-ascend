@@ -290,17 +290,33 @@ def merge_16x16_to_64x64_inverse_kernel(
     tl.store(p_Ai_43, b_Ai_43, boundary_check=(0, 1))
 
 
+SOLVE_TRIL_CASES = [
+    (1, 1024, 32, 64, 182.929),
+    (1, 1024, 64, 64, 613.346),
+    (8, 1024, 32, 64, 1396.827),
+    (16, 1024, 64, 64, 5474.364),
+    (1, 8192, 64, 64, 2730.823),
+    (8, 8192, 32, 64, 10930.605),
+    (16, 8192, 64, 64, 43821.177),
+    (4, 131072, 32, 64, 87436.743),
+]
+
+
 @simd_simt_910_95_only
-def test_costmodel_solve_tril(tmp_path):
-    batch, sequence_length, heads, block = 1, 1024, 32, 64
+@pytest.mark.parametrize(
+    "batch,sequence_length,heads,block,documented_us",
+    SOLVE_TRIL_CASES,
+    ids=[f"B{b}-T{t}-H{h}-BT{bt}" for b, t, h, bt, _ in SOLVE_TRIL_CASES],
+)
+def test_costmodel_solve_tril(batch, sequence_length, heads, block,
+                              documented_us, tmp_path):
     chunks = sequence_length // block
     logical_programs = batch * chunks * heads
     torch.manual_seed(1)
     lower = torch.tril(torch.randn((block, block), dtype=torch.float32), diagonal=-1) * 0.01
-    source = lower.reshape(1, block, 1, block).expand(chunks, block, heads,
-                                                      block).reshape(batch, sequence_length, heads, block)
-    a = source.to(device="npu", dtype=torch.float32)
-    output = torch.zeros((batch, sequence_length, heads, block), dtype=torch.float32, device="npu")
+    a = torch.empty((batch, sequence_length, heads, block), dtype=torch.float32, device="npu")
+    a.view(batch, chunks, block, heads, block).copy_(lower.reshape(1, 1, block, 1, block).to("npu"))
+    output = torch.zeros_like(a)
     report_path = tmp_path / "solve_tril_route.json"
 
     def launch():
@@ -318,16 +334,30 @@ def test_costmodel_solve_tril(tmp_path):
         )
 
     launch()
-    inverse = torch.linalg.inv(torch.eye(block) + lower)
-    expected = inverse.reshape(1, block, 1, block).expand(chunks, block, heads, block).reshape_as(output).to("npu")
-    torch.testing.assert_close(output, expected, rtol=3e-2, atol=3e-2)
+    inverse = torch.linalg.inv(torch.eye(block) + lower).to("npu")
+    output_blocks = output.view(batch, chunks, block, heads, block)
+    probes = {
+        (0, 0, 0),
+        (batch // 2, chunks // 2, heads // 2),
+        (batch - 1, chunks - 1, heads - 1),
+    }
+    for batch_id, chunk_id, head_id in probes:
+        torch.testing.assert_close(
+            output_blocks[batch_id, chunk_id, :, head_id, :],
+            inverse,
+            rtol=3e-2,
+            atol=3e-2,
+        )
     report = _load_route_report(report_path, "mixed_simd_simt")
     assert report["materialized_simt_anchor_count"] > 0
     assert report["selected_superblock_factor"] == 4
     assert report["effective_runtime_factor"] == 4
     assert report["full_group_count"] == logical_programs // 4
     assert report["tail_count"] == 0
-    _assert_performance("solve_tril", launch, tmp_path / "solve_profile", 197.198)
+    case = f"solve_tril_B{batch}_T{sequence_length}_H{heads}_BT{block}"
+    _assert_performance(case, launch, tmp_path / "solve_profile", documented_us)
+    del output_blocks, inverse, output, a
+    torch.npu.empty_cache()
 
 
 @triton.jit
