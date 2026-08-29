@@ -1,5 +1,6 @@
 add_subdirectory(AutoBlockify)
 add_subdirectory(AutoBlockifyV1)
+add_subdirectory(ScopeProfile)
 add_subdirectory(Dialect)
 add_subdirectory(TritonToAnnotation)
 add_subdirectory(TritonToHFusion)
@@ -31,6 +32,7 @@ if(TRITON_ENABLE_COVERAGE_HITEST)
       TritonStructuredIR           # from Dialect/TritonStructured/IR
       AutoBlockify
       AutoBlockifyV1
+      ScopeProfile
   )
 
   foreach(_target ${_instrument_targets})

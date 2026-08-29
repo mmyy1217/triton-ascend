@@ -96,6 +96,25 @@
 using namespace mlir;
 using namespace triton;
 
+static void materializeSimtScopeExecutionContract(ModuleOp module) {
+  module.walk([&](scope::ScopeOp scopeOp) {
+    auto mode = scopeOp->getAttrOfType<StringAttr>("vector_mode");
+    if (!mode || mode.getValue() != "simt")
+      return;
+
+    OpBuilder builder(scopeOp);
+    scopeOp->removeAttr("noinline");
+    scopeOp.setNoInline(true);
+    scopeOp->setAttr("outline", builder.getUnitAttr());
+    scopeOp->setAttr(hivm::TFuncCoreTypeAttr::name,
+                     hivm::TFuncCoreTypeAttr::get(module.getContext(),
+                                                  hivm::TFuncCoreType::AIV));
+    scopeOp->setAttr(
+        hivm::VFModeAttr::name,
+        hivm::VFModeAttr::get(module.getContext(), hivm::VFMode::SIMT));
+  });
+}
+
 int nd2nzFlag = 0;
 bool compileOn91095Flag = false;
 bool existDotFlag = false;
@@ -985,6 +1004,7 @@ void TritonToLinalgPass::runOnOperation() {
   compileModeFlag = triton::ascend::parseCompileMode(this->compileMode);
 
   auto moduleOp = getOperation();
+  materializeSimtScopeExecutionContract(moduleOp);
 
   // Check if the kernel contains tl.dot. Without tl.dot,
   // the kernel would be pure AIV kernel.

@@ -101,6 +101,7 @@ class CompilerCostmodelContractTest(unittest.TestCase):
 
         dump_mgr = DumpManager()
         cache_mod.get_dump_manager = lambda *args, **kwargs: dump_mgr
+        cache_mod.triton_key = lambda: "test-triton-key"
         cache_mod._base32 = lambda value: value
 
         utils_mod.is_compile_on_910_95 = lambda: False
@@ -194,6 +195,28 @@ class CompilerCostmodelContractTest(unittest.TestCase):
         self.assertEqual(metadata["compile_mode"], "simd_simt")
         self.assertEqual(metadata["auto_simt_superblock_factor"], 4)
         self.assertEqual(metadata["auto_simt_requested_kind"], "mixed_simd_simt")
+
+    def test_scope_profile_options_force_independent_mixed_path(self):
+        cmplr, _dump_mgr, _GPUTarget = self._load_compiler_module()
+
+        options = cmplr.NPUOptions(
+            scope_profile_mode="plan",
+            scope_profile_dump="/tmp/scope-profile",
+            auto_simt_scope_mode="auto",
+        )
+
+        self.assertEqual(options.scope_profile_mode, "plan")
+        self.assertEqual(options.compile_mode, "simd_simt")
+        self.assertEqual(options.auto_simt_scope_mode, "off")
+
+    def test_scope_profile_apply_requires_plan_id(self):
+        cmplr, _dump_mgr, _GPUTarget = self._load_compiler_module()
+
+        with self.assertRaisesRegex(ValueError, "PLAN_ID"):
+            cmplr.NPUOptions(
+                scope_profile_mode="apply",
+                scope_profile_dump="/tmp/scope-profile",
+            )
 
 
 if __name__ == "__main__":

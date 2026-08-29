@@ -68,7 +68,7 @@ from triton.backends.compiler import (
     BaseBackend,
     GPUTarget,
 )
-from triton.runtime.cache import get_dump_manager
+from triton.runtime.cache import get_dump_manager, triton_key
 
 
 # TODO: materialize the concrete min shape
@@ -323,6 +323,113 @@ def _run_ta_simt_auto_blockify_v1(mod, metadata, opt, *, super_block_factor=None
     return materialized
 
 
+def _write_json_atomic(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    os.replace(temporary, path)
+
+
+def _scope_profile_core_manifest(manifest: dict) -> dict:
+    keys = ("schema_version", "search_model", "ir_fingerprint", "roots", "segments", "plans")
+    return {key: manifest.get(key) for key in keys}
+
+
+def _persist_scope_profile_manifest(manifest: dict, dump_root: str, mode: str, module_text: str) -> Path:
+    compiler_key = hashlib.sha256(triton_key().encode()).hexdigest()
+    identity = "\0".join((manifest["kernel"], manifest["ir_fingerprint"], compiler_key,
+                           str(manifest.get("target", ""))))
+    kernel_hash = hashlib.sha256(identity.encode()).hexdigest()
+    kernel_dir = Path(dump_root).expanduser().resolve() / kernel_hash
+    manifest["compiler_key"] = compiler_key
+    manifest["kernel_hash"] = kernel_hash
+    manifest_path = kernel_dir / "manifest.json"
+
+    if mode == "apply":
+        if not manifest_path.is_file():
+            raise RuntimeError(
+                f"ScopeProfile apply requires an existing manifest: {manifest_path}. "
+                "Run plan or tune first.")
+        existing = json.loads(manifest_path.read_text())
+        if _scope_profile_core_manifest(existing) != _scope_profile_core_manifest(manifest):
+            raise RuntimeError(
+                "ScopeProfile manifest does not match the current post-AutoBlockify IR; "
+                "run plan or tune again.")
+    else:
+        _write_json_atomic(manifest_path, manifest)
+        for plan in manifest["plans"]:
+            _write_json_atomic(kernel_dir / "plans" / str(plan["id"]) / "plan.json", plan)
+
+    selected = int(manifest.get("selected_plan_id", -1))
+    if mode == "apply":
+        plan_dir = kernel_dir / "plans" / str(selected)
+        selected_plan = next(plan for plan in manifest["plans"] if int(plan["id"]) == selected)
+        _write_json_atomic(plan_dir / "plan.json", selected_plan)
+        (plan_dir / "ttir.scope.mlir").write_text(module_text)
+    return kernel_dir
+
+
+def _run_scope_profile(mod, metadata, opt) -> str:
+    mode = opt.scope_profile_mode
+    if mode == "tune":
+        raise RuntimeError(
+            "TRITON_ASCEND_SCOPE_PROFILE=tune requires "
+            "triton.backends.ascend.scope_profile.run(); direct kernel launch cannot enumerate plans.")
+    if metadata.get("compile_mode") != "simd_simt":
+        raise RuntimeError("ScopeProfile requires compile_mode='simd_simt'.")
+    if not metadata.get("compile_on_910_95", False):
+        raise RuntimeError("ScopeProfile currently supports only Ascend 910_95 targets.")
+
+    _run_ttir_layout_merge(mod, metadata)
+    blacklist_reasons = _get_auto_blockify_blacklist_reasons(str(mod))
+    if blacklist_reasons:
+        reasons = "; ".join(str(reason) for reason in blacklist_reasons)
+        raise RuntimeError(f"ScopeProfile cannot run AutoBlockify V1: {reasons}")
+    metadata["has_auto_blockify_blacklist_op"] = False
+    metadata["auto_blockify_v1_enabled"] = True
+    metadata["auto_blockify_v1_selection_source"] = "scope_profile"
+    materialized = _run_ta_simt_auto_blockify_v1(mod, metadata, opt, super_block_factor=1)
+    if not materialized:
+        raise RuntimeError(
+            "ScopeProfile requires TA AutoBlockify V1 F1 to materialize exactly one scheduling loop; "
+            "the kernel was skipped.")
+    metadata["auto_blockify_v1_runtime_cap"] = True
+
+    plan_id = -1 if mode == "plan" else int(opt.scope_profile_plan_id)
+    pm = ir.pass_manager(mod.context)
+    pm.enable_debug()
+    ascend.passes.ttir.add_scope_profile(pm, plan_id)
+    pm.run(mod, "ta_scope_profile")
+    report = ascend.ir.get_string_attr(mod, "ascend.scope_profile.manifest_json")
+    remove_attr = getattr(ascend.ir, "remove_attr", None)
+    if remove_attr:
+        remove_attr(mod, "ascend.scope_profile.manifest_json")
+    applied = _get_then_remove_rc(mod, "ascend.scope_profile.materialized") == 1
+    if not report:
+        raise RuntimeError("ScopeProfile pass did not produce a manifest.")
+
+    manifest = json.loads(report)
+    target = metadata.get("target")
+    manifest["target"] = getattr(target, "arch", str(target or ""))
+    manifest["specialization_hash"] = metadata.get("hash", "")
+    manifest["layout_merge"] = {
+        "coalesce_factor": metadata.get("ttir_layout_coalesce_factor", 1),
+        "coalesce_axis": metadata.get("ttir_layout_coalesce_axis", -1),
+        "coalesce_grid_ceil_div": metadata.get("ttir_layout_coalesce_grid_ceil_div", False),
+    }
+    manifest["auto_blockify_v1"] = {
+        "factor": 1,
+        "physical_core_count": metadata.get("ta_auto_blockify_v1_physical_core_count"),
+    }
+    kernel_dir = _persist_scope_profile_manifest(manifest, opt.scope_profile_dump, mode, str(mod))
+    metadata["scope_profile_mode"] = mode
+    metadata["scope_profile_plan_id"] = plan_id
+    metadata["scope_profile_materialized"] = applied
+    metadata["scope_profile_report_dir"] = str(kernel_dir)
+    metadata["scope_profile_ir_fingerprint"] = manifest["ir_fingerprint"]
+    return "mixed_simd_simt"
+
+
 def _parse_ttir_text(ttir_code: str, context):
     """Recreate a TTIR module in ``context`` from an immutable snapshot."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -345,10 +452,14 @@ def _refine_ta_simt_auto_blockify_v1_superblock(mod, metadata, super_block_facto
 
 def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
     # use triton_adapter to lower Triton-MLIR to linalg
-    if metadata.get("compile_mode") == "simd_simt" and opt.auto_simt_scope_mode != "off":
-        _run_ttir_layout_merge(mod, metadata)
-        _resolve_auto_blockify_v1_policy(str(mod), metadata, opt)
-    cpp_decision = _run_cpp_simd_simt_costmodel(mod, metadata, opt)
+    scope_profile_enabled = opt.scope_profile_mode != "off"
+    if scope_profile_enabled:
+        cpp_decision = _run_scope_profile(mod, metadata, opt)
+    else:
+        if metadata.get("compile_mode") == "simd_simt" and opt.auto_simt_scope_mode != "off":
+            _run_ttir_layout_merge(mod, metadata)
+            _resolve_auto_blockify_v1_policy(str(mod), metadata, opt)
+        cpp_decision = _run_cpp_simd_simt_costmodel(mod, metadata, opt)
     cpp_all_simt = cpp_decision == "all_simt_only"
     if metadata.get("compile_mode") == "simd_simt" and (cpp_all_simt or ascend.ir.is_whole_body_void_simt_scope(mod)):
         metadata["scope_pure_simt_auto"] = True
@@ -391,7 +502,7 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         # would re-enable the SIMT-only V1 transform on an all-SIMD binary.
         metadata["auto_blockify_v1_enabled"] = False
         metadata["auto_blockify_v1_runtime_cap"] = False
-    else:
+    elif not scope_profile_enabled:
         _resolve_auto_blockify_v1_policy(ttir_code, metadata, opt)
     has_auto_blockify_blacklist_op = metadata["has_auto_blockify_blacklist_op"]
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -710,6 +821,17 @@ def _normalize_auto_simt_scope_mode(mode: Optional[str]) -> str:
     if mode in ("report", "dry_run", "dry-run", "dump"):
         return "report"
     return "off"
+
+
+def _normalize_scope_profile_mode(mode: Optional[str]) -> str:
+    normalized = "off" if mode is None else str(mode).strip().lower()
+    if normalized in {"", "0", "false", "no"}:
+        normalized = "off"
+    if normalized not in {"off", "plan", "tune", "apply"}:
+        raise ValueError(
+            "Invalid TRITON_ASCEND_SCOPE_PROFILE value. Expected off, plan, tune, or apply, "
+            f"got {mode!r}.")
+    return normalized
 
 
 VALID_PARTITION_AND_BIND_SUB_BLOCK = (
@@ -1547,6 +1669,9 @@ class NPUOptions:
     # Content digest is populated in __post_init__ so profile edits invalidate
     # the Triton compile cache even when the path itself is unchanged.
     auto_simt_model_assets_hash: str = ""
+    scope_profile_mode: str = ""
+    scope_profile_dump: str = ""
+    scope_profile_plan_id: int = -1
     # disable simt fma optimization to get high precision
     disable_fma: bool = False
 
@@ -1571,6 +1696,36 @@ class NPUOptions:
         forced_compile_mode = os.environ.get("TRITON_ASCEND_COMPILE_MODE")
         if forced_compile_mode:
             object.__setattr__(self, "compile_mode", forced_compile_mode)
+
+        scope_profile_mode = self.scope_profile_mode or os.environ.get("TRITON_ASCEND_SCOPE_PROFILE", "")
+        scope_profile_mode = _normalize_scope_profile_mode(scope_profile_mode)
+        scope_profile_dump = self.scope_profile_dump or os.environ.get("TRITON_ASCEND_SCOPE_PROFILE_DUMP", "")
+        scope_profile_plan_id = self.scope_profile_plan_id
+        raw_plan_id = os.environ.get("TRITON_ASCEND_SCOPE_PROFILE_PLAN_ID", "")
+        if scope_profile_plan_id < 0 and raw_plan_id:
+            try:
+                scope_profile_plan_id = int(raw_plan_id)
+            except ValueError as error:
+                raise ValueError(
+                    "TRITON_ASCEND_SCOPE_PROFILE_PLAN_ID must be a non-negative integer.") from error
+        if scope_profile_mode == "off":
+            scope_profile_dump = ""
+            scope_profile_plan_id = -1
+        else:
+            if not scope_profile_dump:
+                raise ValueError(
+                    "TRITON_ASCEND_SCOPE_PROFILE_DUMP is required when ScopeProfile is enabled.")
+            if scope_profile_mode == "apply" and scope_profile_plan_id < 0:
+                raise ValueError(
+                    "TRITON_ASCEND_SCOPE_PROFILE_PLAN_ID is required in apply mode.")
+            if scope_profile_mode != "apply" and scope_profile_plan_id >= 0:
+                raise ValueError(
+                    "TRITON_ASCEND_SCOPE_PROFILE_PLAN_ID is valid only in apply mode.")
+            object.__setattr__(self, "compile_mode", "simd_simt")
+            object.__setattr__(self, "auto_simt_scope_mode", "off")
+        object.__setattr__(self, "scope_profile_mode", scope_profile_mode)
+        object.__setattr__(self, "scope_profile_dump", scope_profile_dump)
+        object.__setattr__(self, "scope_profile_plan_id", scope_profile_plan_id)
 
         _validate_partition_and_bind_sub_block(self.enable_partition_and_bind_sub_block)
 
