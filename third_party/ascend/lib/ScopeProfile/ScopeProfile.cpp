@@ -371,7 +371,7 @@ public:
     manifest["root_count"] = static_cast<int64_t>(roots.size());
     manifest["segment_count"] = static_cast<int64_t>(segments.size());
     manifest["candidate_count"] = static_cast<int64_t>(candidates.size());
-    manifest["selected_plan_id"] = planId;
+    manifest["selected_plan_id"] = static_cast<int64_t>(planId);
 
     llvm::json::Array rootArray;
     for (const ProfileRoot &root : roots) {
