@@ -8,6 +8,40 @@ from triton.backends.ascend import scope_profile
 
 
 class ScopeProfileRunnerTest(unittest.TestCase):
+    def test_apply_one_records_compile_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dump = Path(directory)
+            report_dir = dump / "kernel"
+            report_dir.mkdir()
+            with patch.object(scope_profile, "_compile", side_effect=RuntimeError("compile failed")):
+                result = scope_profile._apply_one(
+                    object(), (), (1, ), {}, dump, report_dir, 4,
+                    None, None, 25, 100)
+
+            self.assertEqual(result["failed_phase"], "compile")
+            self.assertEqual(result["error"]["message"], "compile failed")
+            saved = json.loads((report_dir / "plans" / "4" / "result.json").read_text())
+            self.assertEqual(saved["failed_phase"], "compile")
+
+    def test_apply_one_records_runtime_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dump = Path(directory)
+            report_dir = dump / "kernel"
+            report_dir.mkdir()
+            metadata = type("Metadata", (), {"scope_profile_report_dir": str(report_dir)})()
+            compiled = type("Compiled", (), {"metadata": metadata})()
+            with patch.object(scope_profile, "_compile", return_value=(compiled, 1.0)), \
+                 patch.object(scope_profile, "_run_correctness", return_value=None), \
+                 patch.object(scope_profile, "_benchmark", side_effect=RuntimeError("launch failed")):
+                result = scope_profile._apply_one(
+                    object(), (), (1, ), {}, dump, report_dir, 5,
+                    None, lambda: None, 25, 100)
+
+            self.assertEqual(result["failed_phase"], "runtime")
+            self.assertEqual(result["error"]["message"], "launch failed")
+            saved = json.loads((report_dir / "plans" / "5" / "result.json").read_text())
+            self.assertEqual(saved["failed_phase"], "runtime")
+
     def test_tune_keeps_running_after_one_plan_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             dump = Path(directory)
