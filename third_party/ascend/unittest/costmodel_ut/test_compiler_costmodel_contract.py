@@ -218,6 +218,14 @@ class CompilerCostmodelContractTest(unittest.TestCase):
                 scope_profile_dump="/tmp/scope-profile",
             )
 
+    def test_scope_profile_compiler_key_does_not_require_a_runtime_driver(self):
+        cmplr, _dump_mgr, _GPUTarget = self._load_compiler_module()
+
+        compiler_key = cmplr._scope_profile_compiler_key()
+
+        self.assertEqual(len(compiler_key), 64)
+        self.assertEqual(compiler_key, cmplr._scope_profile_compiler_key())
+
 
 if __name__ == "__main__":
     unittest.main()

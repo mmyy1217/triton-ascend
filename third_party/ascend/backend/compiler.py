@@ -68,7 +68,7 @@ from triton.backends.compiler import (
     BaseBackend,
     GPUTarget,
 )
-from triton.runtime.cache import get_dump_manager, triton_key
+from triton.runtime.cache import get_dump_manager
 
 
 # TODO: materialize the concrete min shape
@@ -335,8 +335,25 @@ def _scope_profile_core_manifest(manifest: dict) -> dict:
     return {key: manifest.get(key) for key in keys}
 
 
+@functools.lru_cache()
+def _scope_profile_compiler_key() -> str:
+    digest = hashlib.sha256(b"scope-profile-schema-v1\0")
+    locations = [Path(__file__).resolve()]
+    native_path = getattr(ascend, "__file__", None)
+    if isinstance(native_path, (str, bytes, os.PathLike)):
+        locations.append(Path(native_path).resolve())
+    for location in locations:
+        if not location.is_file():
+            continue
+        digest.update(location.name.encode())
+        with location.open("rb") as source:
+            while chunk := source.read(1024**2):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _persist_scope_profile_manifest(manifest: dict, dump_root: str, mode: str, module_text: str) -> Path:
-    compiler_key = hashlib.sha256(triton_key().encode()).hexdigest()
+    compiler_key = _scope_profile_compiler_key()
     identity = "\0".join((manifest["kernel"], manifest["ir_fingerprint"], compiler_key,
                            str(manifest.get("target", ""))))
     kernel_hash = hashlib.sha256(identity.encode()).hexdigest()
