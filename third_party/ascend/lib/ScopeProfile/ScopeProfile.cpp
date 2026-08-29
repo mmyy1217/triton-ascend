@@ -116,15 +116,20 @@ static llvm::json::Array valueTypes(ArrayRef<Value> values) {
 static llvm::json::Object boundaryJSON(ArrayRef<ProfileRoot> roots,
                                        const ScopeCandidate &candidate) {
   llvm::DenseSet<Operation *> inside;
+  SmallVector<Operation *> orderedInside;
   for (unsigned index = candidate.begin; index < candidate.end; ++index) {
     Operation *root = roots[index].operation;
-    inside.insert(root);
-    root->walk([&](Operation *nested) { inside.insert(nested); });
+    if (inside.insert(root).second)
+      orderedInside.push_back(root);
+    root->walk<WalkOrder::PreOrder>([&](Operation *nested) {
+      if (inside.insert(nested).second)
+        orderedInside.push_back(nested);
+    });
   }
 
   llvm::SetVector<Value> liveIns;
   llvm::SetVector<Value> liveOuts;
-  for (Operation *operation : inside)
+  for (Operation *operation : orderedInside)
     for (Value operand : operation->getOperands())
       if (!isInside(operand, inside))
         liveIns.insert(operand);

@@ -1,5 +1,8 @@
 // RUN: triton-opt --ta-scope-profile="plan-id=-1" %s | FileCheck %s --check-prefix=PLAN
 // RUN: triton-opt --ta-scope-profile="plan-id=1" %s | FileCheck %s --check-prefix=POINTER
+// RUN: triton-opt --ta-scope-profile="plan-id=-1" %s > %t.first
+// RUN: triton-opt --ta-scope-profile="plan-id=-1" %s > %t.second
+// RUN: diff %t.first %t.second
 
 // PLAN: ascend.scope_profile.manifest_json
 // PLAN-NOT: scope.scope
