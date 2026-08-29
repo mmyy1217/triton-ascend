@@ -419,6 +419,8 @@ public:
   }
 };
 
+static PassRegistration<TAScopeProfilePass> scopeProfilePassRegistration;
+
 } // namespace
 
 std::unique_ptr<OperationPass<ModuleOp>>
