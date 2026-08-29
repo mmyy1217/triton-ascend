@@ -94,7 +94,7 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
             mlir::triton::createTARefineSIMTAutoBlockifyV1SuperBlockPass(opts));
       });
   m.def("add_scope_profile", [](mlir::PassManager &pm, int64_t planId) {
-    mlir::triton::TAScopeProfileOptions opts;
+    TAScopeProfileOptions opts;
     opts.planId = planId;
     pm.addPass(mlir::triton::createTAScopeProfilePass(opts));
   });
