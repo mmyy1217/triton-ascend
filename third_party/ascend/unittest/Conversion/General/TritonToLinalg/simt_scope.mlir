@@ -11,7 +11,9 @@
 // CHECK-SAME: outline
 // CHECK-SAME: vector_mode = "simt"
 tt.func public @simt_scope(%arg0: !tt.ptr<f32>) {
+  %zero = arith.constant 0.000000e+00 : f32
   scope.scope : () -> () {
+    tt.store %arg0, %zero : !tt.ptr<f32>
     scope.return
   } {vector_mode = "simt"}
   tt.return
